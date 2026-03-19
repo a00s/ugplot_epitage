@@ -288,6 +288,39 @@ ui <- fluidPage(
         conditionalPanel(
           condition = "input.ml_target != ''",
           tags$div(
+            tags$h4("Missing Data Strategy"),
+            fluidRow(
+              column(4,
+                checkboxGroupInput(
+                  "ml_missing_definition",
+                  "Consider as missing:",
+                  choices = c("Empty string" = "empty", "NA" = "na", "Zero (0, 0.0, 0.0000)" = "zero"),
+                  selected = c("empty", "na")
+                )
+              ),
+              column(4,
+                selectInput(
+                  "ml_missing_strategy",
+                  "Strategy:",
+                  choices = c(
+                    "Do nothing" = "none",
+                    "Remove columns" = "remove_columns",
+                    "Remove samples" = "remove_rows",
+                    "Replace with zero" = "replace_zero",
+                    "KNN imputation" = "knn",
+                    "Mean imputation" = "mean"
+                  ),
+                  selected = "none"
+                )
+              ),
+              column(2,
+                numericInput("ml_missing_threshold_cols", "Column threshold (%)", min = 0, max = 100, value = 50, step = 1)
+              ),
+              column(2,
+                numericInput("ml_missing_threshold_rows", "Sample threshold (%)", min = 0, max = 100, value = 50, step = 1)
+              )
+            ),
+            htmlOutput("ml_missing_summary"),
             verbatimTextOutput("console_output"),
             column(
               width = 6,
@@ -395,6 +428,103 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   showTab(inputId = "tabs", target = "4) 2D PLOT")
   showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
   showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
+}
+
+build_missing_mask <- function(df, missing_definition = c("empty", "na")) {
+  mask <- matrix(FALSE, nrow = nrow(df), ncol = ncol(df))
+  colnames(mask) <- colnames(df)
+  rownames(mask) <- rownames(df)
+  for (j in seq_along(df)) {
+    col_data <- df[[j]]
+    missing_col <- rep(FALSE, length(col_data))
+    if ("na" %in% missing_definition) {
+      missing_col <- missing_col | is.na(col_data)
+    }
+    if ("empty" %in% missing_definition) {
+      missing_col <- missing_col | (!is.na(col_data) & trimws(as.character(col_data)) == "")
+    }
+    if ("zero" %in% missing_definition) {
+      suppressWarnings({
+        numeric_col <- as.numeric(as.character(col_data))
+      })
+      missing_col <- missing_col | (!is.na(numeric_col) & numeric_col == 0)
+    }
+    mask[, j] <- missing_col
+  }
+  mask
+}
+
+apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, missing_definition,
+                                   threshold_cols = 50, threshold_rows = 50) {
+  train_set <- as.data.frame(trainSet)
+  test_set <- as.data.frame(testSet)
+
+  predictors_train <- train_set[, setdiff(colnames(train_set), target_name), drop = FALSE]
+  predictors_test <- test_set[, setdiff(colnames(test_set), target_name), drop = FALSE]
+
+  train_missing <- build_missing_mask(predictors_train, missing_definition)
+  test_missing <- build_missing_mask(predictors_test, missing_definition)
+
+  if (strategy == "remove_columns") {
+    col_missing_pct <- colMeans(train_missing) * 100
+    keep_cols <- names(col_missing_pct[col_missing_pct <= threshold_cols])
+    predictors_train <- predictors_train[, keep_cols, drop = FALSE]
+    predictors_test <- predictors_test[, keep_cols, drop = FALSE]
+    train_missing <- build_missing_mask(predictors_train, missing_definition)
+    test_missing <- build_missing_mask(predictors_test, missing_definition)
+  }
+
+  if (strategy == "remove_rows") {
+    row_missing_pct <- rowMeans(train_missing) * 100
+    keep_rows <- which(row_missing_pct <= threshold_rows)
+    train_set <- train_set[keep_rows, , drop = FALSE]
+    predictors_train <- predictors_train[keep_rows, , drop = FALSE]
+    train_missing <- build_missing_mask(predictors_train, missing_definition)
+  }
+
+  if (strategy == "replace_zero") {
+    predictors_train[train_missing] <- 0
+    predictors_test[test_missing] <- 0
+  }
+
+  if (strategy == "mean") {
+    num_cols <- names(predictors_train)[sapply(predictors_train, is.numeric)]
+    for (col_name in num_cols) {
+      mean_value <- mean(predictors_train[[col_name]][!train_missing[, col_name]], na.rm = TRUE)
+      if (is.nan(mean_value)) mean_value <- 0
+      col_missing_train <- train_missing[, col_name]
+      col_missing_test <- test_missing[, col_name]
+      predictors_train[[col_name]][col_missing_train] <- mean_value
+      predictors_test[[col_name]][col_missing_test] <- mean_value
+    }
+  }
+
+  if (strategy == "knn") {
+    num_cols <- names(predictors_train)[sapply(predictors_train, is.numeric)]
+    if (length(num_cols) > 0) {
+      knn_train <- predictors_train[, num_cols, drop = FALSE]
+      knn_test <- predictors_test[, num_cols, drop = FALSE]
+      knn_train[train_missing[, num_cols, drop = FALSE]] <- NA
+      knn_test[test_missing[, num_cols, drop = FALSE]] <- NA
+      pp <- caret::preProcess(knn_train, method = "knnImpute")
+      knn_train_imputed <- predict(pp, knn_train)
+      knn_test_imputed <- predict(pp, knn_test)
+      predictors_train[, num_cols] <- knn_train_imputed[, num_cols, drop = FALSE]
+      predictors_test[, num_cols] <- knn_test_imputed[, num_cols, drop = FALSE]
+    }
+  }
+
+  if (strategy == "none") {
+    predictors_train[train_missing] <- NA
+    predictors_test[test_missing] <- NA
+  }
+
+  train_set <- cbind(train_set[, target_name, drop = FALSE], predictors_train)
+  test_set <- cbind(test_set[, target_name, drop = FALSE], predictors_test)
+  names(train_set)[1] <- target_name
+  names(test_set)[1] <- target_name
+
+  list(train_set = train_set, test_set = test_set)
 }
 
 load_dataset_into_table <- function(localsession) {
@@ -581,6 +711,69 @@ server <- function(input, output, session) {
 
   output$ml_error_message <- renderUI({
     tags$span(ml_error_message_text(), style = "color: black; font-size: 12px;")
+  })
+
+  output$ml_missing_summary <- renderUI({
+    req(input$ml_target)
+    req(input$row_checkbox_group, input$column_checkbox_group)
+    subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group, drop = FALSE]
+    req(nrow(subset_table) > 0, ncol(subset_table) > 0)
+    target_name <- input$ml_target
+    if (!(target_name %in% colnames(subset_table))) {
+      return(tags$p("Select a valid target column to preview missing-data strategy."))
+    }
+    predictors <- subset_table[, setdiff(colnames(subset_table), target_name), drop = FALSE]
+    missing_definition <- input$ml_missing_definition
+    if (length(missing_definition) == 0) {
+      missing_definition <- character(0)
+    }
+    missing_mask <- build_missing_mask(predictors, missing_definition)
+    missing_count <- sum(missing_mask)
+    total_cells <- length(as.matrix(predictors))
+    missing_pct <- if (total_cells > 0) round(100 * missing_count / total_cells, 2) else 0
+    col_threshold <- input$ml_missing_threshold_cols
+    row_threshold <- input$ml_missing_threshold_rows
+    strategy <- input$ml_missing_strategy
+    columns_after <- ncol(predictors)
+    samples_after <- nrow(predictors)
+    est_missing_after <- missing_count
+
+    if (strategy == "remove_columns" && ncol(predictors) > 0) {
+      col_missing_pct <- colMeans(missing_mask) * 100
+      keep_cols <- names(col_missing_pct[col_missing_pct <= col_threshold])
+      columns_after <- length(keep_cols)
+      if (columns_after > 0) {
+        est_missing_after <- sum(missing_mask[, keep_cols, drop = FALSE])
+      } else {
+        est_missing_after <- 0
+      }
+    }
+    if (strategy == "remove_rows" && ncol(predictors) > 0) {
+      row_missing_pct <- rowMeans(missing_mask) * 100
+      keep_rows <- which(row_missing_pct <= row_threshold)
+      samples_after <- length(keep_rows)
+      if (samples_after > 0) {
+        est_missing_after <- sum(missing_mask[keep_rows, , drop = FALSE])
+      } else {
+        est_missing_after <- 0
+      }
+    }
+    if (strategy %in% c("replace_zero", "mean", "knn")) {
+      est_missing_after <- 0
+    }
+
+    tags$div(
+      tags$h5("Dataset Missingness Summary"),
+      tags$ul(
+        tags$li(paste("Number of features:", ncol(predictors))),
+        tags$li(paste("Number of samples:", nrow(predictors))),
+        tags$li(paste("Missing cells:", missing_count)),
+        tags$li(paste("Missingness (%):", paste0(missing_pct, "%"))),
+        tags$li(paste("Estimated features after strategy:", columns_after)),
+        tags$li(paste("Estimated samples after strategy:", samples_after)),
+        tags$li(paste("Estimated missing cells after strategy:", est_missing_after))
+      )
+    )
   })
 
   observeEvent(input$column_checkbox_group, {
@@ -978,6 +1171,26 @@ server <- function(input, output, session) {
           }
           if (!is.data.frame(testSet)) {
             testSet <- as.data.frame(testSet)
+          }
+          missing_strategy <- input$ml_missing_strategy
+          missing_definition <- input$ml_missing_definition
+          if (is.null(missing_definition)) {
+            missing_definition <- c("empty", "na")
+          }
+          processed_data <- apply_missing_strategy(
+            trainSet = trainSet,
+            testSet = testSet,
+            target_name = target_name,
+            strategy = missing_strategy,
+            missing_definition = missing_definition,
+            threshold_cols = input$ml_missing_threshold_cols,
+            threshold_rows = input$ml_missing_threshold_rows
+          )
+          trainSet <- processed_data$train_set
+          testSet <- processed_data$test_set
+          if (nrow(trainSet) < 5 || ncol(trainSet) < 2) {
+            ml_error_message_text(paste(ml_error_message_text(), " ", "Not enough data after missing strategy for seed", loop_dataset_seed, "/"))
+            next
           }
           all_models <- input$ml_checkbox_group
           count_model <- 0
