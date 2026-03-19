@@ -36,35 +36,75 @@ sink("ugplot.log", split = TRUE)
 options(shiny.maxRequestSize = 800 * 1024 * 1024)
 
 # Auxiliary functions to load example files, palettes, and CSS
-path_to_2dplotlist <- function() {
-  system.file("extdata", "2dplotlist.csv", package = "ugplot")
+resolve_extdata <- function(filename) {
+  package_path <- system.file("extdata", filename, package = "ugplot")
+  local_inst_path <- file.path("inst", "extdata", filename)
+  local_path <- file.path("extdata", filename)
+
+  candidate_paths <- unique(c(package_path, local_inst_path, local_path))
+  candidate_paths <- candidate_paths[nzchar(candidate_paths)]
+  existing_paths <- candidate_paths[file.exists(candidate_paths)]
+
+  if (length(existing_paths) > 0) {
+    return(existing_paths[[1]])
+  }
+
+  stop(
+    paste0(
+      "File '", filename, "' was not found in extdata. ",
+      "Install the package with devtools::install() / R CMD INSTALL ",
+      "or run the app from a local project structure containing inst/extdata."
+    ),
+    call. = FALSE
+  )
 }
-lines <- readLines(path_to_2dplotlist())
+
+read_extdata_lines <- function(filename) {
+  resolved_path <- resolve_extdata(filename)
+
+  if (!nzchar(resolved_path) || !file.exists(resolved_path)) {
+    stop(
+      paste0(
+        "Unable to read '", filename, "'. ",
+        "Install the package with devtools::install() / R CMD INSTALL ",
+        "or use a local project structure with inst/extdata."
+      ),
+      call. = FALSE
+    )
+  }
+
+  readLines(resolved_path)
+}
+
+path_to_2dplotlist <- function() {
+  resolve_extdata("2dplotlist.csv")
+}
+lines <- read_extdata_lines("2dplotlist.csv")
 lines <- lines[!startsWith(trimws(lines), "#")]
 plotlist2d <- read.csv(text = lines, sep = ";", header = TRUE)
 
 path_to_plotlist <- function() {
-  system.file("extdata", "plotlist.csv", package = "ugplot")
+  resolve_extdata("plotlist.csv")
 }
-lines <- readLines(path_to_plotlist())
+lines <- read_extdata_lines("plotlist.csv")
 lines <- lines[!startsWith(trimws(lines), "#")]
 plotlist <- read.csv(text = lines, sep = ";", header = TRUE)
 
 path_to_palette <- function() {
-  system.file("extdata", "palette.csv", package = "ugplot")
+  resolve_extdata("palette.csv")
 }
-lines <- readLines(path_to_palette())
+lines <- read_extdata_lines("palette.csv")
 lines <- lines[!startsWith(trimws(lines), "#")]
 palettelist <- read.csv(text = lines, sep = ";", header = TRUE)
 
 path_to_css <- function() {
-  system.file("extdata", "styles.css", package = "ugplot")
+  resolve_extdata("styles.css")
 }
 
 path_to_sample_data <- function() {
-  system.file("extdata", "sample.csv", package = "ugplot")
+  resolve_extdata("sample.csv")
 }
-lines <- readLines(path_to_sample_data())
+lines <- read_extdata_lines("sample.csv")
 sample_data <- read.csv(text = lines, sep = ",", header = TRUE)
 row.names(sample_data) <- sample_data[, 1]
 sample_data <- sample_data[, -1]
@@ -86,8 +126,8 @@ ml_prediction <<- list()
 best_model_object <- reactiveVal(NULL)
 
 getImage <- function(fileName) {
-  dataURI(file = system.file("extdata", fileName, package = "ugplot"),
-    mime = "image/png")
+  image_path <- resolve_extdata(fileName)
+  dataURI(file = image_path, mime = "image/png")
 }
 
 # Define the UI of the application
