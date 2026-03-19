@@ -1,0 +1,17 @@
+[1] "0  x  28"
+[1] "Number of completely empty columns: 28"
+[1] "Number of empty rows in each non-completely empty column:"
+named integer(0)
+[1] "714  x  28"
+[1] "Number of completely empty columns: 0"
+[1] "Number of empty rows in each non-completely empty column:"
+cg01005439 cg02162324 cg03140421 cg03456938 cg03811260 cg03845837 cg03887094 cg04030401 cg04235075 cg04580872 cg04845649 
+         0          0          0          0          0          0          0          0          0          0          0 
+cg04890459 cg05436064 cg06277900 cg06537680 cg06621126 cg07188665 cg07816687 cg09030672 cg09567485 cg09974990 cg13975336 
+         0          0          0          0          0          0          0          0          0          0          0 
+cg18705279 cg23414876 cg26783727 cg26870771        sex        age 
+         0          0          0          0          0          0 
+[1] "Library already installed."
+[1] "Library already installed."
+[1] "Library already installed."
+[1] "Library already installed."

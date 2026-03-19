@@ -1,0 +1,40 @@
+Package: ugplot
+Type: Package
+Title: Find the best Caret model for your data and generate plots for papers
+Version: 1.0
+Author: Thiago Benazzi Maia, Francesco Reggiani, Ulrich Pfeffer 
+Maintainer: Thiago Benazzi Maia <a00s@a00s.com>
+Description: Is an R library that uses shiny to assists in finding relationships between columns of a data matrix in three ways:
+              1. With heatmap and distribution graphics.
+              2. With Pearson correlation graphics.
+              3. By conducting prediction tests using models from the Caret library.
+License: GPL-3
+Encoding: UTF-8
+LazyData: true
+Imports:
+    shiny,
+    shinyWidgets,
+    shinyjs,
+    shinybusy,
+    ggplot2,
+    heatmap3,
+    DT,
+    gplots,
+    viridis,
+    RColorBrewer,
+    dendextend,
+    pheatmap,
+    randomForest,
+    glmnet,
+    plotly,
+    tidyr,
+    keras,
+    caret,
+    base64enc,
+    ggExtra,
+    gridExtra,
+    parallel,
+    doParallel,
+    R.utils,
+    ConsensusClusterPlus
+RoxygenNote: 7.3.2
