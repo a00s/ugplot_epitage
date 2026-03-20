@@ -311,7 +311,7 @@ ui <- fluidPage(
     ),
     tabPanel("5) MACHINE LEARNING",
       tags$div(
-        style = "display: inline-block; vertical-align: top;",
+        style = "display: block; width: 100%;",
         selectizeInput("ml_target", "Target column (healthy, cancer, ...)", choices = ""),
         conditionalPanel(
           condition = "input.ml_target != ''",
@@ -341,48 +341,41 @@ ui <- fluidPage(
               condition = "input.ml_toggle_missing % 2 == 1",
               div(
                 class = "ml-section-panel",
-                fluidRow(
-                  column(4,
-                    checkboxGroupInput(
-                      "ml_missing_definition",
-                      "Consider as missing:",
-                      choices = c("Empty string" = "empty", "NA" = "na", "Zero (0, 0.0, 0.0000)" = "zero"),
-                      selected = c("empty", "na")
+                div(
+                  class = "ml-missing-stack",
+                  checkboxGroupInput(
+                    "ml_missing_definition",
+                    "Consider as missing:",
+                    choices = c("Empty string" = "empty", "NA" = "na", "Zero (0, 0.0, 0.0000)" = "zero"),
+                    selected = c("empty", "na")
+                  ),
+                  selectInput(
+                    "ml_missing_strategy",
+                    "How to handle missing values:",
+                    choices = c(
+                      "Do nothing" = "none",
+                      "Replace with zero" = "replace_zero",
+                      "KNN imputation" = "knn",
+                      "Mean imputation" = "mean",
+                      "missForest imputation" = "missforest",
+                      "methyLImp2 imputation" = "methylimp2"
+                    ),
+                    selected = "none"
+                  ),
+                  div(
+                    class = "ml-threshold-input",
+                    numericInput(
+                      "ml_missing_threshold_cols",
+                      "Remove columns when missingness is above (%)",
+                      min = 0, max = 100, value = 100, step = 1
                     )
                   ),
-                  column(4,
-                    selectInput(
-                      "ml_missing_strategy",
-                      "How to handle missing values:",
-                      choices = c(
-                        "Do nothing" = "none",
-                        "Replace with zero" = "replace_zero",
-                        "KNN imputation" = "knn",
-                        "Mean imputation" = "mean",
-                        "missForest imputation" = "missforest",
-                        "methyLImp2 imputation" = "methylimp2"
-                      ),
-                      selected = "none"
-                    )
-                  ),
-                  column(2,
-                    div(
-                      class = "ml-threshold-input",
-                      numericInput(
-                        "ml_missing_threshold_cols",
-                        "Remove columns when missingness is above (%)",
-                        min = 0, max = 100, value = 100, step = 1
-                      )
-                    )
-                  ),
-                  column(2,
-                    div(
-                      class = "ml-threshold-input",
-                      numericInput(
-                        "ml_missing_threshold_rows",
-                        "Remove samples when missingness is above (%)",
-                        min = 0, max = 100, value = 100, step = 1
-                      )
+                  div(
+                    class = "ml-threshold-input",
+                    numericInput(
+                      "ml_missing_threshold_rows",
+                      "Remove samples when missingness is above (%)",
+                      min = 0, max = 100, value = 100, step = 1
                     )
                   )
                 ),
@@ -888,9 +881,9 @@ server <- function(input, output, session) {
       row_class <- if (!identical(before_value, after_value)) "ml-summary-row-changed" else ""
       tags$tr(
         class = row_class,
-        tags$td(label),
-        tags$td(as.character(before_value)),
-        tags$td(as.character(after_value))
+        tags$td(style = "padding: 8px 12px; border-bottom: 1px solid #edf0f3;", label),
+        tags$td(style = "padding: 8px 12px; border-bottom: 1px solid #edf0f3;", as.character(before_value)),
+        tags$td(style = "padding: 8px 12px; border-bottom: 1px solid #edf0f3;", as.character(after_value))
       )
     }
 
@@ -898,11 +891,12 @@ server <- function(input, output, session) {
       tags$h5("Dataset Missingness Summary"),
       tags$table(
         class = "ml-summary-table",
+        style = "width: 100%; max-width: 760px; border-collapse: collapse; border: 1px solid #e2e6ea; background: #fff;",
         tags$thead(
           tags$tr(
-            tags$th("Metric"),
-            tags$th("Current"),
-            tags$th("After configuration")
+            tags$th(style = "padding: 8px 12px; background: #f5f7fa; border-bottom: 1px solid #e2e6ea;", "Metric"),
+            tags$th(style = "padding: 8px 12px; background: #f5f7fa; border-bottom: 1px solid #e2e6ea;", "Current"),
+            tags$th(style = "padding: 8px 12px; background: #f5f7fa; border-bottom: 1px solid #e2e6ea;", "After configuration")
           )
         ),
         tags$tbody(
