@@ -377,9 +377,13 @@ ui <- fluidPage(
                       "Remove samples when missingness is above (%)",
                       min = 0, max = 100, value = 100, step = 1
                     )
-                  )
+                  ),
+                  actionButton("ml_run_threshold_scan", "Run exhaustive threshold scan (0-100%)"),
+                  tags$div(style = "margin-top: 8px;", textOutput("ml_threshold_scan_status"))
                 ),
-                htmlOutput("ml_missing_summary")
+                htmlOutput("ml_missing_summary"),
+                htmlOutput("ml_threshold_scan_summary"),
+                DT::DTOutput("ml_threshold_scan_table")
               )
             ),
             verbatimTextOutput("console_output"),
@@ -515,6 +519,104 @@ build_missing_mask <- function(df, missing_definition = c("empty", "na")) {
   mask
 }
 
+apply_missing_filters <- function(predictors, missing_definition,
+                                  threshold_cols = 100, threshold_rows = 100) {
+  filtered_predictors <- predictors
+  filtered_mask <- build_missing_mask(filtered_predictors, missing_definition)
+  keep_cols <- colnames(filtered_predictors)
+  keep_rows <- seq_len(nrow(filtered_predictors))
+
+  if (ncol(filtered_predictors) > 0) {
+    col_missing_pct <- colMeans(filtered_mask) * 100
+    keep_cols <- names(col_missing_pct[col_missing_pct <= threshold_cols])
+    filtered_predictors <- filtered_predictors[, keep_cols, drop = FALSE]
+    filtered_mask <- build_missing_mask(filtered_predictors, missing_definition)
+  }
+
+  if (ncol(filtered_predictors) > 0) {
+    row_missing_pct <- rowMeans(filtered_mask) * 100
+    keep_rows <- which(row_missing_pct <= threshold_rows)
+    filtered_predictors <- filtered_predictors[keep_rows, , drop = FALSE]
+    filtered_mask <- filtered_mask[keep_rows, , drop = FALSE]
+  }
+
+  list(
+    filtered_predictors = filtered_predictors,
+    filtered_mask = filtered_mask,
+    keep_cols = keep_cols,
+    keep_rows = keep_rows
+  )
+}
+
+compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
+                                              progress_callback = NULL, status_callback = NULL) {
+  threshold_values <- 0:100
+  original_rows <- nrow(predictors)
+  original_cols <- ncol(predictors)
+  total_iterations <- length(threshold_values)^2
+  idx <- 0
+  metrics_list <- vector("list", total_iterations)
+
+  for (thr_col in threshold_values) {
+    for (thr_row in threshold_values) {
+      idx <- idx + 1
+      filtered <- apply_missing_filters(
+        predictors = predictors,
+        missing_definition = missing_definition,
+        threshold_cols = thr_col,
+        threshold_rows = thr_row
+      )
+      filtered_mask <- filtered$filtered_mask
+      n_cols_after <- ncol(filtered_mask)
+      n_rows_after <- nrow(filtered_mask)
+      missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
+      total_after <- n_cols_after * n_rows_after
+      missing_pct_after <- if (total_after > 0) (100 * missing_after / total_after) else 0
+      filled_cells <- total_after - missing_after
+      rows_retained <- if (original_rows > 0) n_rows_after / original_rows else 0
+      cols_retained <- if (original_cols > 0) n_cols_after / original_cols else 0
+      tradeoff_score <- ((rows_retained + cols_retained) / 2) - (missing_pct_after / 100)
+
+      metrics_list[[idx]] <- data.frame(
+        thr_col = thr_col,
+        thr_row = thr_row,
+        n_cols_after = n_cols_after,
+        n_rows_after = n_rows_after,
+        total_cells_after = total_after,
+        missing_cells_after = missing_after,
+        filled_cells = filled_cells,
+        missing_pct_after = round(missing_pct_after, 2),
+        rows_retained = rows_retained,
+        cols_retained = cols_retained,
+        tradeoff_score = tradeoff_score
+      )
+    }
+    if (!is.null(progress_callback)) {
+      progress_callback((thr_col + 1) / length(threshold_values))
+    }
+    if (!is.null(status_callback)) {
+      status_callback(sprintf("Scanning... column threshold %d%% of 100%% (%d/%d combinations)",
+        thr_col, idx, total_iterations))
+    }
+  }
+
+  results <- do.call(rbind, metrics_list)
+
+  dominated <- rep(FALSE, nrow(results))
+  for (i in seq_len(nrow(results))) {
+    candidate <- results[i, ]
+    better_or_equal <- (results$n_rows_after >= candidate$n_rows_after) &
+      (results$n_cols_after >= candidate$n_cols_after) &
+      (results$missing_pct_after <= candidate$missing_pct_after)
+    strictly_better <- (results$n_rows_after > candidate$n_rows_after) |
+      (results$n_cols_after > candidate$n_cols_after) |
+      (results$missing_pct_after < candidate$missing_pct_after)
+    dominated[i] <- any(better_or_equal & strictly_better)
+  }
+  results$pareto <- !dominated
+  results[order(-results$pareto, -results$tradeoff_score, results$missing_pct_after, -results$filled_cells), , drop = FALSE]
+}
+
 run_methylimp2 <- function(data_with_na) {
   if (!requireNamespace("methyLImp2", quietly = TRUE)) {
     stop("The 'methyLImp2' package is not installed. Install it with BiocManager::install('methyLImp2').")
@@ -539,21 +641,23 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
   train_missing <- build_missing_mask(predictors_train, missing_definition)
   test_missing <- build_missing_mask(predictors_test, missing_definition)
 
-  if (ncol(predictors_train) > 0) {
-    col_missing_pct <- colMeans(train_missing) * 100
-    keep_cols <- names(col_missing_pct[col_missing_pct <= threshold_cols])
-    predictors_train <- predictors_train[, keep_cols, drop = FALSE]
-    predictors_test <- predictors_test[, keep_cols, drop = FALSE]
-    train_missing <- build_missing_mask(predictors_train, missing_definition)
+  filtered_train <- apply_missing_filters(
+    predictors = predictors_train,
+    missing_definition = missing_definition,
+    threshold_cols = threshold_cols,
+    threshold_rows = threshold_rows
+  )
+  predictors_train <- filtered_train$filtered_predictors
+  train_missing <- filtered_train$filtered_mask
+
+  if (ncol(predictors_test) > 0) {
+    predictors_test <- predictors_test[, filtered_train$keep_cols, drop = FALSE]
     test_missing <- build_missing_mask(predictors_test, missing_definition)
   }
 
   if (ncol(predictors_train) > 0) {
-    row_missing_pct <- rowMeans(train_missing) * 100
-    keep_rows <- which(row_missing_pct <= threshold_rows)
+    keep_rows <- filtered_train$keep_rows
     train_set <- train_set[keep_rows, , drop = FALSE]
-    predictors_train <- predictors_train[keep_rows, , drop = FALSE]
-    train_missing <- build_missing_mask(predictors_train, missing_definition)
   }
 
   if (strategy == "replace_zero") {
@@ -831,47 +935,43 @@ server <- function(input, output, session) {
       label = if (is_open) "\u25be Missing Data Strategy" else "\u25b8 Missing Data Strategy")
   }, ignoreInit = TRUE)
 
-  output$ml_missing_summary <- renderUI({
+  missing_preview_data <- reactive({
     req(input$ml_target)
     req(input$row_checkbox_group, input$column_checkbox_group)
     subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group, drop = FALSE]
     req(nrow(subset_table) > 0, ncol(subset_table) > 0)
     target_name <- input$ml_target
-    if (!(target_name %in% colnames(subset_table))) {
-      return(tags$p("Select a valid target column to preview missing-data strategy."))
-    }
+    req(target_name %in% colnames(subset_table))
     predictors <- subset_table[, setdiff(colnames(subset_table), target_name), drop = FALSE]
     missing_definition <- input$ml_missing_definition
     if (length(missing_definition) == 0) {
       missing_definition <- character(0)
     }
-    missing_mask <- build_missing_mask(predictors, missing_definition)
+    list(
+      predictors = predictors,
+      missing_definition = missing_definition
+    )
+  })
+
+  output$ml_missing_summary <- renderUI({
+    preview <- missing_preview_data()
+    predictors <- preview$predictors
+    missing_mask <- build_missing_mask(predictors, preview$missing_definition)
     missing_count <- sum(missing_mask)
     total_cells <- length(as.matrix(predictors))
     missing_pct <- if (total_cells > 0) round(100 * missing_count / total_cells, 2) else 0
     col_threshold <- input$ml_missing_threshold_cols
     row_threshold <- input$ml_missing_threshold_rows
     strategy <- input$ml_missing_strategy
-    columns_after <- ncol(predictors)
-    samples_after <- nrow(predictors)
-    est_missing_after <- missing_count
-
-    filtered_mask <- missing_mask
-    if (ncol(predictors) > 0) {
-      col_missing_pct <- colMeans(filtered_mask) * 100
-      keep_cols <- names(col_missing_pct[col_missing_pct <= col_threshold])
-      filtered_mask <- filtered_mask[, keep_cols, drop = FALSE]
-      columns_after <- ncol(filtered_mask)
-    }
-    if (ncol(filtered_mask) > 0) {
-      row_missing_pct <- rowMeans(filtered_mask) * 100
-      keep_rows <- which(row_missing_pct <= row_threshold)
-      filtered_mask <- filtered_mask[keep_rows, , drop = FALSE]
-      samples_after <- nrow(filtered_mask)
-    } else {
-      samples_after <- nrow(predictors)
-    }
-
+    filtered <- apply_missing_filters(
+      predictors = predictors,
+      missing_definition = preview$missing_definition,
+      threshold_cols = col_threshold,
+      threshold_rows = row_threshold
+    )
+    filtered_mask <- filtered$filtered_mask
+    columns_after <- ncol(filtered_mask)
+    samples_after <- nrow(filtered_mask)
     est_missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
     if (strategy %in% c("replace_zero", "mean", "knn", "missforest", "methylimp2")) {
       est_missing_after <- 0
@@ -911,6 +1011,88 @@ server <- function(input, output, session) {
             }
           )
         )
+      )
+    )
+  })
+
+  threshold_scan_results <- reactiveVal(NULL)
+  threshold_scan_status <- reactiveVal("Status: idle (click the button to run exhaustive scan).")
+
+  output$ml_threshold_scan_status <- renderText({
+    threshold_scan_status()
+  })
+
+  observeEvent(input$ml_run_threshold_scan, {
+    preview <- missing_preview_data()
+    threshold_scan_status("Status: starting exhaustive scan (0-100% x 0-100%)...")
+    started_at <- Sys.time()
+    progress_bar <- shiny::Progress$new(session, min = 0, max = 1)
+    on.exit(progress_bar$close(), add = TRUE)
+    progress_bar$set(message = "Running exhaustive threshold scan", value = 0)
+    results <- compute_exhaustive_threshold_scan(
+      predictors = preview$predictors,
+      missing_definition = preview$missing_definition,
+      progress_callback = function(progress_value) {
+        progress_bar$set(
+          value = progress_value,
+          detail = sprintf("%.0f%% completed", 100 * progress_value)
+        )
+      },
+      status_callback = function(msg) {
+        elapsed <- as.numeric(difftime(Sys.time(), started_at, units = "secs"))
+        threshold_scan_status(sprintf("Status: %s | elapsed: %.1fs", msg, elapsed))
+      }
+    )
+    threshold_scan_results(results)
+    elapsed_total <- as.numeric(difftime(Sys.time(), started_at, units = "secs"))
+    threshold_scan_status(sprintf(
+      "Status: completed. Tested %s combinations in %.1fs.",
+      nrow(threshold_scan_results()), elapsed_total
+    ))
+  })
+
+  output$ml_threshold_scan_summary <- renderUI({
+    results <- threshold_scan_results()
+    req(nrow(results) > 0)
+    best <- results[1, , drop = FALSE]
+    pareto_count <- sum(results$pareto)
+    tags$div(
+      style = "margin: 8px 0 12px 0; padding: 10px; background: #f6fbf6; border: 1px solid #cfe9cf;",
+      tags$b("Best hotspot found (maximize information, minimize missingness): "),
+      sprintf("columns = %s%%, rows = %s%%", best$thr_col, best$thr_row),
+      tags$br(),
+      sprintf(
+        "After filter: %s columns, %s samples, %s filled cells, %.2f%% missing.",
+        best$n_cols_after, best$n_rows_after, best$filled_cells, best$missing_pct_after
+      ),
+      tags$br(),
+      sprintf(
+        "Missing cells after filter: %s (out of %s total cells).",
+        best$missing_cells_after, best$total_cells_after
+      ),
+      tags$br(),
+      sprintf(
+        "Pareto hotspots found: %s | Tested threshold pairs: %s.",
+        pareto_count, nrow(results)
+      )
+    )
+  })
+
+  output$ml_threshold_scan_table <- DT::renderDT({
+    results <- threshold_scan_results()
+    req(nrow(results) > 0)
+    top_results <- head(results[, c(
+      "thr_col", "thr_row", "n_cols_after", "n_rows_after",
+      "missing_pct_after", "filled_cells", "rows_retained", "cols_retained",
+      "tradeoff_score", "pareto"
+    ), drop = FALSE], 100)
+    DT::datatable(
+      top_results,
+      rownames = FALSE,
+      options = list(pageLength = 10, scrollX = TRUE),
+      caption = htmltools::tags$caption(
+        style = "caption-side: top; text-align: left;",
+        "Top 100 combinations ranked by Pareto flag + tradeoff score (high rows/cols and low missingness)."
       )
     )
   })
