@@ -394,6 +394,7 @@ ui <- fluidPage(
                   )
                 ),
                 htmlOutput("ml_missing_summary"),
+                htmlOutput("ml_missing_recommendation"),
                 plotOutput("ml_missing_pareto_plot", height = "280px"),
                 DT::DTOutput("ml_missing_pareto_table")
               )
@@ -585,7 +586,7 @@ compute_missing_threshold_grid <- function(predictors, missing_definition, step 
     missing_pct_after <- if (total_after > 0) (100 * missing_after / total_after) else 0
     rows_retained <- if (original_rows > 0) (n_rows_after / original_rows) else 0
     cols_retained <- if (original_cols > 0) (n_cols_after / original_cols) else 0
-    score <- if (isTRUE(use_score)) (w1 * rows_retained + w2 * cols_retained - w3 * (missing_pct_after / 100)) else NA_real_
+    score <- (w1 * rows_retained + w2 * cols_retained - w3 * (missing_pct_after / 100))
 
     data.frame(
       thr_col = thr_col,
@@ -618,6 +619,18 @@ compute_missing_threshold_grid <- function(predictors, missing_definition, step 
   }
   results$pareto <- !dominated
   results
+}
+
+recommend_missing_threshold <- function(grid_results) {
+  if (nrow(grid_results) == 0) {
+    return(NULL)
+  }
+  candidates <- grid_results[grid_results$pareto, , drop = FALSE]
+  if (nrow(candidates) == 0) {
+    candidates <- grid_results
+  }
+  best_idx <- order(-candidates$score, -candidates$n_rows_after, -candidates$n_cols_after, candidates$missing_pct_after)[1]
+  candidates[best_idx, , drop = FALSE]
 }
 
 run_methylimp2 <- function(data_with_na) {
@@ -1033,20 +1046,37 @@ server <- function(input, output, session) {
     results <- preview$grid_results
     req(nrow(results) > 0)
     plot(
-      x = results$n_rows_after,
-      y = results$n_cols_after,
+      x = results$thr_col,
+      y = results$thr_row,
       col = ifelse(results$pareto, "#d73027", "#4575b4"),
       pch = ifelse(results$pareto, 19, 1),
-      xlab = "Rows after filter",
-      ylab = "Columns after filter",
-      main = "Threshold grid and Pareto frontier"
+      xlab = "Column threshold (%)",
+      ylab = "Row threshold (%)",
+      main = "Threshold pairs and Pareto frontier"
     )
-    if (any(results$pareto)) {
-      pareto_points <- results[results$pareto, , drop = FALSE]
-      pareto_points <- pareto_points[order(pareto_points$n_rows_after, pareto_points$n_cols_after), , drop = FALSE]
-      lines(pareto_points$n_rows_after, pareto_points$n_cols_after, col = "#d73027", lwd = 2)
+    best <- recommend_missing_threshold(results)
+    if (!is.null(best)) {
+      points(best$thr_col, best$thr_row, col = "#1a9850", pch = 17, cex = 1.5)
     }
-    legend("bottomleft", legend = c("Grid", "Pareto frontier"), col = c("#4575b4", "#d73027"), pch = c(1, 19), bty = "n")
+    legend("bottomleft", legend = c("Grid", "Pareto frontier", "Recommended"), col = c("#4575b4", "#d73027", "#1a9850"), pch = c(1, 19, 17), bty = "n")
+  })
+
+  output$ml_missing_recommendation <- renderUI({
+    preview <- missing_grid_preview()
+    best <- recommend_missing_threshold(preview$grid_results)
+    req(!is.null(best))
+    tags$div(
+      style = "margin: 8px 0 12px 0; padding: 10px; background: #f6fbf6; border: 1px solid #cfe9cf;",
+      tags$b("Suggested thresholds: "),
+      sprintf("columns = %s%%, rows = %s%%", best$thr_col, best$thr_row),
+      tags$br(),
+      sprintf(
+        "After filter: %s columns, %s samples, %.2f%% missing.",
+        best$n_cols_after, best$n_rows_after, best$missing_pct_after
+      ),
+      tags$br(),
+      sprintf("Composite score (w1/w2/w3) = %.4f", best$score)
+    )
   })
 
   output$ml_missing_pareto_table <- DT::renderDT({
@@ -1055,17 +1085,20 @@ server <- function(input, output, session) {
     req(nrow(results) > 0)
     pareto <- results[results$pareto, c("thr_col", "thr_row", "n_cols_after", "n_rows_after",
       "missing_pct_after", "rows_retained", "cols_retained", "score"), drop = FALSE]
+    best <- recommend_missing_threshold(results)
+    if (!is.null(best) && nrow(pareto) > 0) {
+      pareto$recommended <- pareto$thr_col == best$thr_col & pareto$thr_row == best$thr_row
+    }
+    pareto <- pareto[order(-pareto$score), , drop = FALSE]
     if (!isTRUE(input$ml_missing_use_score)) {
       pareto$score <- NULL
-    } else {
-      pareto <- pareto[order(-pareto$score), , drop = FALSE]
     }
     DT::datatable(
       pareto,
       rownames = FALSE,
       options = list(pageLength = 8, scrollX = TRUE),
       caption = htmltools::tags$caption(style = "caption-side: top; text-align: left;",
-        "Non-dominated threshold pairs (Pareto frontier)")
+        "Non-dominated threshold pairs (Pareto frontier). 'recommended = TRUE' marks the best compromise.")
     )
   })
 
