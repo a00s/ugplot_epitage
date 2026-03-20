@@ -383,7 +383,6 @@ ui <- fluidPage(
                 ),
                 htmlOutput("ml_missing_summary"),
                 htmlOutput("ml_threshold_scan_summary"),
-                actionButton("ml_use_best_thresholds", "Use best thresholds in fields"),
                 uiOutput("downloadMissingScanBestDatasetUI"),
                 fluidRow(
                   column(6, plotOutput("ml_target_plot_original", height = "220px")),
@@ -1211,6 +1210,8 @@ server <- function(input, output, session) {
       best_dataset <- cbind(best_target, best_filtered$filtered_predictors)
       names(best_dataset)[1] <- preview$target_name
       threshold_scan_best_dataset(best_dataset)
+      updateNumericInput(session, "ml_missing_threshold_cols", value = as.numeric(best$thr_col))
+      updateNumericInput(session, "ml_missing_threshold_rows", value = as.numeric(best$thr_row))
     } else {
       threshold_scan_best_dataset(NULL)
     }
@@ -1219,18 +1220,6 @@ server <- function(input, output, session) {
       "Status: completed. Tested %s combinations in %.1fs.",
       nrow(threshold_scan_results()), elapsed_total
     ))
-  })
-
-  observeEvent(input$ml_use_best_thresholds, {
-    results <- threshold_scan_results()
-    req(!is.null(results), nrow(results) > 0)
-    best <- results[1, , drop = FALSE]
-    updateNumericInput(session, "ml_missing_threshold_cols", value = as.numeric(best$thr_col))
-    updateNumericInput(session, "ml_missing_threshold_rows", value = as.numeric(best$thr_row))
-    showNotification(
-      sprintf("Applied best thresholds: columns=%s%%, rows=%s%%.", best$thr_col, best$thr_row),
-      type = "message"
-    )
   })
 
   output$ml_threshold_scan_summary <- renderUI({
