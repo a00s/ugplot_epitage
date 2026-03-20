@@ -520,25 +520,42 @@ build_missing_mask <- function(df, missing_definition = c("empty", "na")) {
   mask
 }
 
-apply_missing_filters <- function(predictors, missing_definition,
-                                  threshold_cols = 100, threshold_rows = 100) {
+apply_missing_filters_with_order <- function(predictors, missing_definition,
+                                             threshold_cols = 100, threshold_rows = 100,
+                                             order = c("cols_first", "rows_first")) {
+  order <- match.arg(order)
   filtered_predictors <- predictors
   filtered_mask <- build_missing_mask(filtered_predictors, missing_definition)
   keep_cols <- colnames(filtered_predictors)
   keep_rows <- seq_len(nrow(filtered_predictors))
 
-  if (ncol(filtered_predictors) > 0) {
-    col_missing_pct <- colMeans(filtered_mask) * 100
-    keep_cols <- names(col_missing_pct[col_missing_pct <= threshold_cols])
-    filtered_predictors <- filtered_predictors[, keep_cols, drop = FALSE]
-    filtered_mask <- build_missing_mask(filtered_predictors, missing_definition)
-  }
+  if (order == "cols_first") {
+    if (ncol(filtered_predictors) > 0) {
+      col_missing_pct <- colMeans(filtered_mask) * 100
+      keep_cols <- names(col_missing_pct[col_missing_pct <= threshold_cols])
+      filtered_predictors <- filtered_predictors[, keep_cols, drop = FALSE]
+      filtered_mask <- build_missing_mask(filtered_predictors, missing_definition)
+    }
 
-  if (ncol(filtered_predictors) > 0) {
-    row_missing_pct <- rowMeans(filtered_mask) * 100
-    keep_rows <- which(row_missing_pct <= threshold_rows)
-    filtered_predictors <- filtered_predictors[keep_rows, , drop = FALSE]
-    filtered_mask <- filtered_mask[keep_rows, , drop = FALSE]
+    if (ncol(filtered_predictors) > 0) {
+      row_missing_pct <- rowMeans(filtered_mask) * 100
+      keep_rows <- which(row_missing_pct <= threshold_rows)
+      filtered_predictors <- filtered_predictors[keep_rows, , drop = FALSE]
+      filtered_mask <- filtered_mask[keep_rows, , drop = FALSE]
+    }
+  } else {
+    if (ncol(filtered_predictors) > 0) {
+      row_missing_pct <- rowMeans(filtered_mask) * 100
+      keep_rows <- which(row_missing_pct <= threshold_rows)
+      filtered_predictors <- filtered_predictors[keep_rows, , drop = FALSE]
+      filtered_mask <- filtered_mask[keep_rows, , drop = FALSE]
+    }
+    if (ncol(filtered_predictors) > 0) {
+      col_missing_pct <- colMeans(filtered_mask) * 100
+      keep_cols <- names(col_missing_pct[col_missing_pct <= threshold_cols])
+      filtered_predictors <- filtered_predictors[, keep_cols, drop = FALSE]
+      filtered_mask <- build_missing_mask(filtered_predictors, missing_definition)
+    }
   }
 
   list(
@@ -549,78 +566,151 @@ apply_missing_filters <- function(predictors, missing_definition,
   )
 }
 
+apply_missing_filters <- function(predictors, missing_definition,
+                                  threshold_cols = 100, threshold_rows = 100) {
+  apply_missing_filters_with_order(
+    predictors = predictors,
+    missing_definition = missing_definition,
+    threshold_cols = threshold_cols,
+    threshold_rows = threshold_rows,
+    order = "cols_first"
+  )
+}
+
 compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
                                               progress_callback = NULL, status_callback = NULL) {
-  missing_mask <- build_missing_mask(predictors, missing_definition)
   original_rows <- nrow(predictors)
   original_cols <- ncol(predictors)
-  col_missing_pct <- if (ncol(missing_mask) > 0) colMeans(missing_mask) * 100 else numeric(0)
-  threshold_cols <- sort(unique(pmin(100, pmax(0, ceiling(c(0, 100, col_missing_pct))))))
-  total_iterations <- 0
-  if (length(threshold_cols) == 0) {
-    threshold_cols <- c(0, 100)
-  }
-  idx <- 0
-  metrics_list <- list()
+  full_mask <- build_missing_mask(predictors, missing_definition)
 
-  for (thr_col in threshold_cols) {
-    if (ncol(missing_mask) > 0) {
-      keep_cols <- names(col_missing_pct[col_missing_pct <= thr_col])
-      filtered_mask_cols <- missing_mask[, keep_cols, drop = FALSE]
-    } else {
-      filtered_mask_cols <- missing_mask
-    }
-    n_cols_after <- ncol(filtered_mask_cols)
-    if (n_cols_after > 0) {
-      row_missing_pct <- rowMeans(filtered_mask_cols) * 100
-      threshold_rows <- sort(unique(pmin(100, pmax(0, ceiling(c(0, 100, row_missing_pct))))))
-    } else {
-      row_missing_pct <- numeric(0)
-      threshold_rows <- c(0, 100)
-    }
-    total_iterations <- total_iterations + length(threshold_rows)
+  scan_one_order <- function(scan_order = c("cols_first", "rows_first"), phase_start = 0, phase_width = 0.5) {
+    scan_order <- match.arg(scan_order)
+    metrics_list <- list()
+    idx <- 0
 
-    for (thr_row in threshold_rows) {
-      idx <- idx + 1
-      if (n_cols_after > 0) {
-        keep_rows <- which(row_missing_pct <= thr_row)
-        filtered_mask <- filtered_mask_cols[keep_rows, , drop = FALSE]
-      } else {
-        filtered_mask <- filtered_mask_cols
+    if (scan_order == "cols_first") {
+      col_missing_pct <- if (ncol(full_mask) > 0) colMeans(full_mask) * 100 else numeric(0)
+      outer_thresholds <- sort(unique(pmin(100, pmax(0, ceiling(c(0, 100, col_missing_pct))))))
+      if (length(outer_thresholds) == 0) outer_thresholds <- c(0, 100)
+      for (thr_col in outer_thresholds) {
+        if (ncol(full_mask) > 0) {
+          keep_cols <- names(col_missing_pct[col_missing_pct <= thr_col])
+          filtered_mask_outer <- full_mask[, keep_cols, drop = FALSE]
+        } else {
+          filtered_mask_outer <- full_mask
+        }
+        if (ncol(filtered_mask_outer) > 0) {
+          row_missing_pct <- rowMeans(filtered_mask_outer) * 100
+          inner_thresholds <- sort(unique(pmin(100, pmax(0, ceiling(c(0, 100, row_missing_pct))))))
+        } else {
+          row_missing_pct <- numeric(0)
+          inner_thresholds <- c(0, 100)
+        }
+        for (thr_row in inner_thresholds) {
+          idx <- idx + 1
+          filtered <- apply_missing_filters_with_order(
+            predictors = predictors,
+            missing_definition = missing_definition,
+            threshold_cols = thr_col,
+            threshold_rows = thr_row,
+            order = "cols_first"
+          )
+          filtered_mask <- filtered$filtered_mask
+          n_cols_after <- ncol(filtered_mask)
+          n_rows_after <- nrow(filtered_mask)
+          missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
+          total_after <- n_cols_after * n_rows_after
+          missing_pct_after <- if (total_after > 0) (100 * missing_after / total_after) else 0
+          filled_cells <- total_after - missing_after
+          rows_retained <- if (original_rows > 0) n_rows_after / original_rows else 0
+          cols_retained <- if (original_cols > 0) n_cols_after / original_cols else 0
+          tradeoff_score <- ((rows_retained + cols_retained) / 2) - (missing_pct_after / 100)
+          metrics_list[[idx]] <- data.frame(
+            thr_col = thr_col, thr_row = thr_row, scan_order = "cols_first",
+            n_cols_after = n_cols_after, n_rows_after = n_rows_after,
+            total_cells_after = total_after, missing_cells_after = missing_after,
+            filled_cells = filled_cells, missing_pct_after = round(missing_pct_after, 2),
+            rows_retained = rows_retained, cols_retained = cols_retained, tradeoff_score = tradeoff_score
+          )
+        }
+        if (!is.null(progress_callback)) {
+          local_progress <- which(outer_thresholds == thr_col)[1] / length(outer_thresholds)
+          progress_callback(phase_start + phase_width * local_progress)
+        }
+        if (!is.null(status_callback)) {
+          status_callback(sprintf("Scanning (cols->rows)... column threshold %d%%", thr_col))
+        }
       }
-      n_rows_after <- nrow(filtered_mask)
-      missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
-      total_after <- n_cols_after * n_rows_after
-      missing_pct_after <- if (total_after > 0) (100 * missing_after / total_after) else 0
-      filled_cells <- total_after - missing_after
-      rows_retained <- if (original_rows > 0) n_rows_after / original_rows else 0
-      cols_retained <- if (original_cols > 0) n_cols_after / original_cols else 0
-      tradeoff_score <- ((rows_retained + cols_retained) / 2) - (missing_pct_after / 100)
-
-      metrics_list[[idx]] <- data.frame(
-        thr_col = thr_col,
-        thr_row = thr_row,
-        n_cols_after = n_cols_after,
-        n_rows_after = n_rows_after,
-        total_cells_after = total_after,
-        missing_cells_after = missing_after,
-        filled_cells = filled_cells,
-        missing_pct_after = round(missing_pct_after, 2),
-        rows_retained = rows_retained,
-        cols_retained = cols_retained,
-        tradeoff_score = tradeoff_score
-      )
+    } else {
+      row_missing_pct <- if (ncol(full_mask) > 0) rowMeans(full_mask) * 100 else numeric(0)
+      outer_thresholds <- sort(unique(pmin(100, pmax(0, ceiling(c(0, 100, row_missing_pct))))))
+      if (length(outer_thresholds) == 0) outer_thresholds <- c(0, 100)
+      for (thr_row in outer_thresholds) {
+        if (ncol(full_mask) > 0) {
+          keep_rows <- which(row_missing_pct <= thr_row)
+          filtered_mask_outer <- full_mask[keep_rows, , drop = FALSE]
+        } else {
+          filtered_mask_outer <- full_mask
+        }
+        if (ncol(filtered_mask_outer) > 0) {
+          col_missing_pct <- colMeans(filtered_mask_outer) * 100
+          inner_thresholds <- sort(unique(pmin(100, pmax(0, ceiling(c(0, 100, col_missing_pct))))))
+        } else {
+          inner_thresholds <- c(0, 100)
+        }
+        for (thr_col in inner_thresholds) {
+          idx <- idx + 1
+          filtered <- apply_missing_filters_with_order(
+            predictors = predictors,
+            missing_definition = missing_definition,
+            threshold_cols = thr_col,
+            threshold_rows = thr_row,
+            order = "rows_first"
+          )
+          filtered_mask <- filtered$filtered_mask
+          n_cols_after <- ncol(filtered_mask)
+          n_rows_after <- nrow(filtered_mask)
+          missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
+          total_after <- n_cols_after * n_rows_after
+          missing_pct_after <- if (total_after > 0) (100 * missing_after / total_after) else 0
+          filled_cells <- total_after - missing_after
+          rows_retained <- if (original_rows > 0) n_rows_after / original_rows else 0
+          cols_retained <- if (original_cols > 0) n_cols_after / original_cols else 0
+          tradeoff_score <- ((rows_retained + cols_retained) / 2) - (missing_pct_after / 100)
+          metrics_list[[idx]] <- data.frame(
+            thr_col = thr_col, thr_row = thr_row, scan_order = "rows_first",
+            n_cols_after = n_cols_after, n_rows_after = n_rows_after,
+            total_cells_after = total_after, missing_cells_after = missing_after,
+            filled_cells = filled_cells, missing_pct_after = round(missing_pct_after, 2),
+            rows_retained = rows_retained, cols_retained = cols_retained, tradeoff_score = tradeoff_score
+          )
+        }
+        if (!is.null(progress_callback)) {
+          local_progress <- which(outer_thresholds == thr_row)[1] / length(outer_thresholds)
+          progress_callback(phase_start + phase_width * local_progress)
+        }
+        if (!is.null(status_callback)) {
+          status_callback(sprintf("Scanning (rows->cols)... row threshold %d%%", thr_row))
+        }
+      }
     }
-    if (!is.null(progress_callback)) {
-      progress_callback(which(threshold_cols == thr_col)[1] / length(threshold_cols))
+    if (length(metrics_list) == 0) {
+      return(data.frame())
     }
-    if (!is.null(status_callback)) {
-      status_callback(sprintf("Scanning... column threshold %d%% (%d evaluated combinations)",
-        thr_col, idx))
-    }
+    do.call(rbind, metrics_list)
   }
 
-  results <- do.call(rbind, metrics_list)
+  results_cols_first <- scan_one_order("cols_first", phase_start = 0, phase_width = 0.5)
+  results_rows_first <- scan_one_order("rows_first", phase_start = 0.5, phase_width = 0.5)
+  results <- rbind(results_cols_first, results_rows_first)
+  if (nrow(results) == 0) {
+    return(results)
+  }
+
+  cross_key <- paste(results$thr_col, results$thr_row, results$n_cols_after, results$n_rows_after,
+    results$missing_pct_after, sep = "|")
+  cross_counts <- table(cross_key)
+  results$cross_point <- as.logical(cross_counts[cross_key] >= 2)
 
   dominated <- rep(FALSE, nrow(results))
   for (i in seq_len(nrow(results))) {
@@ -634,7 +724,8 @@ compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
     dominated[i] <- any(better_or_equal & strictly_better)
   }
   results$pareto <- !dominated
-  results[order(-results$pareto, -results$tradeoff_score, results$missing_pct_after, -results$filled_cells), , drop = FALSE]
+  results[order(-results$cross_point, -results$pareto, -results$tradeoff_score,
+    results$missing_pct_after, -results$filled_cells), , drop = FALSE]
 }
 
 run_methylimp2 <- function(data_with_na) {
@@ -1090,11 +1181,12 @@ server <- function(input, output, session) {
     threshold_scan_results(results)
     if (!is.null(results) && nrow(results) > 0) {
       best <- results[1, , drop = FALSE]
-      best_filtered <- apply_missing_filters(
+      best_filtered <- apply_missing_filters_with_order(
         predictors = preview$predictors,
         missing_definition = preview$missing_definition,
         threshold_cols = best$thr_col,
-        threshold_rows = best$thr_row
+        threshold_rows = best$thr_row,
+        order = as.character(best$scan_order)
       )
       best_target <- preview$subset_table[, preview$target_name, drop = FALSE]
       if (ncol(best_filtered$filtered_predictors) > 0) {
@@ -1118,10 +1210,11 @@ server <- function(input, output, session) {
     req(nrow(results) > 0)
     best <- results[1, , drop = FALSE]
     pareto_count <- sum(results$pareto)
+    cross_count <- sum(results$cross_point)
     tags$div(
       style = "margin: 8px 0 12px 0; padding: 10px; background: #f6fbf6; border: 1px solid #cfe9cf;",
       tags$b("Best hotspot found (maximize information, minimize missingness): "),
-      sprintf("columns = %s%%, rows = %s%%", best$thr_col, best$thr_row),
+      sprintf("columns = %s%%, rows = %s%%, order = %s", best$thr_col, best$thr_row, best$scan_order),
       tags$br(),
       sprintf(
         "After filter: %s columns, %s samples, %s filled cells, %.2f%% missing.",
@@ -1134,8 +1227,8 @@ server <- function(input, output, session) {
       ),
       tags$br(),
       sprintf(
-        "Pareto hotspots found: %s | Tested threshold pairs: %s.",
-        pareto_count, nrow(results)
+        "Pareto hotspots: %s | Crossing points (same result in both orders): %s | Tested pairs: %s.",
+        pareto_count, cross_count, nrow(results)
       )
     )
   })
@@ -1144,7 +1237,7 @@ server <- function(input, output, session) {
     results <- threshold_scan_results()
     req(nrow(results) > 0)
     top_results <- head(results[, c(
-      "thr_col", "thr_row", "n_cols_after", "n_rows_after",
+      "thr_col", "thr_row", "scan_order", "cross_point", "n_cols_after", "n_rows_after",
       "missing_pct_after", "filled_cells", "rows_retained", "cols_retained",
       "tradeoff_score", "pareto"
     ), drop = FALSE], 100)
