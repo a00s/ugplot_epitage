@@ -378,25 +378,11 @@ ui <- fluidPage(
                       min = 0, max = 100, value = 100, step = 1
                     )
                   ),
-                  div(
-                    class = "ml-threshold-input",
-                    numericInput(
-                      "ml_missing_grid_step",
-                      "Grid step for threshold scan (%)",
-                      min = 1, max = 100, value = 5, step = 1
-                    )
-                  ),
-                  checkboxInput("ml_missing_use_score", "Use composite score in Pareto table", value = FALSE),
-                  fluidRow(
-                    column(4, numericInput("ml_missing_score_w1", "w1 (rows)", value = 1, step = 0.1)),
-                    column(4, numericInput("ml_missing_score_w2", "w2 (cols)", value = 1, step = 0.1)),
-                    column(4, numericInput("ml_missing_score_w3", "w3 (missing)", value = 1, step = 0.1))
-                  )
+                  actionButton("ml_run_threshold_scan", "Run exhaustive threshold scan (0-100%)")
                 ),
                 htmlOutput("ml_missing_summary"),
-                htmlOutput("ml_missing_recommendation"),
-                plotOutput("ml_missing_pareto_plot", height = "280px"),
-                DT::DTOutput("ml_missing_pareto_table")
+                htmlOutput("ml_threshold_scan_summary"),
+                DT::DTOutput("ml_threshold_scan_table")
               )
             ),
             verbatimTextOutput("console_output"),
@@ -561,12 +547,8 @@ apply_missing_filters <- function(predictors, missing_definition,
   )
 }
 
-compute_missing_threshold_grid <- function(predictors, missing_definition, step = 5,
-                                           use_score = FALSE, w1 = 1, w2 = 1, w3 = 1) {
-  safe_step <- max(1, floor(step))
-  threshold_values <- sort(unique(c(seq(0, 100, by = safe_step), 100)))
-  original_rows <- nrow(predictors)
-  original_cols <- ncol(predictors)
+compute_exhaustive_threshold_scan <- function(predictors, missing_definition) {
+  threshold_values <- 0:100
   grid <- expand.grid(thr_col = threshold_values, thr_row = threshold_values, KEEP.OUT.ATTRS = FALSE)
 
   grid_metrics <- lapply(seq_len(nrow(grid)), function(i) {
@@ -584,53 +566,22 @@ compute_missing_threshold_grid <- function(predictors, missing_definition, step 
     missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
     total_after <- n_cols_after * n_rows_after
     missing_pct_after <- if (total_after > 0) (100 * missing_after / total_after) else 0
-    rows_retained <- if (original_rows > 0) (n_rows_after / original_rows) else 0
-    cols_retained <- if (original_cols > 0) (n_cols_after / original_cols) else 0
-    score <- (w1 * rows_retained + w2 * cols_retained - w3 * (missing_pct_after / 100))
+    filled_cells <- total_after - missing_after
 
     data.frame(
       thr_col = thr_col,
       thr_row = thr_row,
       n_cols_after = n_cols_after,
       n_rows_after = n_rows_after,
-      missing_pct_after = round(missing_pct_after, 2),
-      rows_retained = rows_retained,
-      cols_retained = cols_retained,
-      score = score
+      total_cells_after = total_after,
+      missing_cells_after = missing_after,
+      filled_cells = filled_cells,
+      missing_pct_after = round(missing_pct_after, 2)
     )
   })
 
   results <- do.call(rbind, grid_metrics)
-  if (nrow(results) == 0) {
-    results$pareto <- logical(0)
-    return(results)
-  }
-
-  dominated <- rep(FALSE, nrow(results))
-  for (i in seq_len(nrow(results))) {
-    candidate <- results[i, ]
-    better_or_equal <- (results$n_rows_after >= candidate$n_rows_after) &
-      (results$n_cols_after >= candidate$n_cols_after) &
-      (results$missing_pct_after <= candidate$missing_pct_after)
-    strictly_better <- (results$n_rows_after > candidate$n_rows_after) |
-      (results$n_cols_after > candidate$n_cols_after) |
-      (results$missing_pct_after < candidate$missing_pct_after)
-    dominated[i] <- any(better_or_equal & strictly_better)
-  }
-  results$pareto <- !dominated
-  results
-}
-
-recommend_missing_threshold <- function(grid_results) {
-  if (nrow(grid_results) == 0) {
-    return(NULL)
-  }
-  candidates <- grid_results[grid_results$pareto, , drop = FALSE]
-  if (nrow(candidates) == 0) {
-    candidates <- grid_results
-  }
-  best_idx <- order(-candidates$score, -candidates$n_rows_after, -candidates$n_cols_after, candidates$missing_pct_after)[1]
-  candidates[best_idx, , drop = FALSE]
+  results[order(-results$filled_cells, -results$n_rows_after, -results$n_cols_after, results$missing_pct_after), , drop = FALSE]
 }
 
 run_methylimp2 <- function(data_with_na) {
@@ -951,7 +902,7 @@ server <- function(input, output, session) {
       label = if (is_open) "\u25be Missing Data Strategy" else "\u25b8 Missing Data Strategy")
   }, ignoreInit = TRUE)
 
-  missing_grid_preview <- reactive({
+  missing_preview_data <- reactive({
     req(input$ml_target)
     req(input$row_checkbox_group, input$column_checkbox_group)
     subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group, drop = FALSE]
@@ -963,24 +914,14 @@ server <- function(input, output, session) {
     if (length(missing_definition) == 0) {
       missing_definition <- character(0)
     }
-    grid_results <- compute_missing_threshold_grid(
-      predictors = predictors,
-      missing_definition = missing_definition,
-      step = input$ml_missing_grid_step,
-      use_score = isTRUE(input$ml_missing_use_score),
-      w1 = input$ml_missing_score_w1,
-      w2 = input$ml_missing_score_w2,
-      w3 = input$ml_missing_score_w3
-    )
     list(
       predictors = predictors,
-      missing_definition = missing_definition,
-      grid_results = grid_results
+      missing_definition = missing_definition
     )
   })
 
   output$ml_missing_summary <- renderUI({
-    preview <- missing_grid_preview()
+    preview <- missing_preview_data()
     predictors <- preview$predictors
     missing_mask <- build_missing_mask(predictors, preview$missing_definition)
     missing_count <- sum(missing_mask)
@@ -1041,64 +982,56 @@ server <- function(input, output, session) {
     )
   })
 
-  output$ml_missing_pareto_plot <- renderPlot({
-    preview <- missing_grid_preview()
-    results <- preview$grid_results
-    req(nrow(results) > 0)
-    plot(
-      x = results$thr_col,
-      y = results$thr_row,
-      col = ifelse(results$pareto, "#d73027", "#4575b4"),
-      pch = ifelse(results$pareto, 19, 1),
-      xlab = "Column threshold (%)",
-      ylab = "Row threshold (%)",
-      main = "Threshold pairs and Pareto frontier"
+  threshold_scan_results <- eventReactive(input$ml_run_threshold_scan, {
+    preview <- missing_preview_data()
+    results <- compute_exhaustive_threshold_scan(
+      predictors = preview$predictors,
+      missing_definition = preview$missing_definition
     )
-    best <- recommend_missing_threshold(results)
-    if (!is.null(best)) {
-      points(best$thr_col, best$thr_row, col = "#1a9850", pch = 17, cex = 1.5)
-    }
-    legend("bottomleft", legend = c("Grid", "Pareto frontier", "Recommended"), col = c("#4575b4", "#d73027", "#1a9850"), pch = c(1, 19, 17), bty = "n")
+    results
   })
 
-  output$ml_missing_recommendation <- renderUI({
-    preview <- missing_grid_preview()
-    best <- recommend_missing_threshold(preview$grid_results)
-    req(!is.null(best))
+  output$ml_threshold_scan_summary <- renderUI({
+    results <- threshold_scan_results()
+    req(nrow(results) > 0)
+    best <- results[1, , drop = FALSE]
     tags$div(
       style = "margin: 8px 0 12px 0; padding: 10px; background: #f6fbf6; border: 1px solid #cfe9cf;",
-      tags$b("Suggested thresholds: "),
+      tags$b("Best thresholds found (exhaustive scan 0-100%): "),
       sprintf("columns = %s%%, rows = %s%%", best$thr_col, best$thr_row),
       tags$br(),
       sprintf(
-        "After filter: %s columns, %s samples, %.2f%% missing.",
-        best$n_cols_after, best$n_rows_after, best$missing_pct_after
+        "After filter: %s columns, %s samples, %s filled cells, %.2f%% missing.",
+        best$n_cols_after, best$n_rows_after, best$filled_cells, best$missing_pct_after
       ),
       tags$br(),
-      sprintf("Composite score (w1/w2/w3) = %.4f", best$score)
+      sprintf(
+        "Missing cells after filter: %s (out of %s total cells).",
+        best$missing_cells_after, best$total_cells_after
+      ),
+      tags$br(),
+      sprintf(
+        "Top result among %s tested threshold pairs.",
+        nrow(results)
+      )
     )
   })
 
-  output$ml_missing_pareto_table <- DT::renderDT({
-    preview <- missing_grid_preview()
-    results <- preview$grid_results
+  output$ml_threshold_scan_table <- DT::renderDT({
+    results <- threshold_scan_results()
     req(nrow(results) > 0)
-    pareto <- results[results$pareto, c("thr_col", "thr_row", "n_cols_after", "n_rows_after",
-      "missing_pct_after", "rows_retained", "cols_retained", "score"), drop = FALSE]
-    best <- recommend_missing_threshold(results)
-    if (!is.null(best) && nrow(pareto) > 0) {
-      pareto$recommended <- pareto$thr_col == best$thr_col & pareto$thr_row == best$thr_row
-    }
-    pareto <- pareto[order(-pareto$score), , drop = FALSE]
-    if (!isTRUE(input$ml_missing_use_score)) {
-      pareto$score <- NULL
-    }
+    top_results <- head(results[, c(
+      "thr_col", "thr_row", "n_cols_after", "n_rows_after",
+      "filled_cells", "missing_cells_after", "total_cells_after", "missing_pct_after"
+    ), drop = FALSE], 100)
     DT::datatable(
-      pareto,
+      top_results,
       rownames = FALSE,
-      options = list(pageLength = 8, scrollX = TRUE),
-      caption = htmltools::tags$caption(style = "caption-side: top; text-align: left;",
-        "Non-dominated threshold pairs (Pareto frontier). 'recommended = TRUE' marks the best compromise.")
+      options = list(pageLength = 10, scrollX = TRUE),
+      caption = htmltools::tags$caption(
+        style = "caption-side: top; text-align: left;",
+        "Top 100 combinations ranked by filled cells (descending)."
+      )
     )
   })
 
