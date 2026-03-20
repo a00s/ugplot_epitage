@@ -383,7 +383,7 @@ ui <- fluidPage(
                 ),
                 htmlOutput("ml_missing_summary"),
                 htmlOutput("ml_threshold_scan_summary"),
-                uiOutput("downloadMissingScanBestDatasetUI"),
+                downloadButton("downloadMissingScanBestDataset", "Download dataset with current thresholds (CSV)"),
                 fluidRow(
                   column(6, plotOutput("ml_target_plot_original", height = "220px")),
                   column(6, plotOutput("ml_target_plot_filtered", height = "220px"))
@@ -974,23 +974,24 @@ server <- function(input, output, session) {
     }
   })
 
-  output$downloadMissingScanBestDatasetUI <- renderUI({
-    if (!is.null(threshold_scan_best_dataset()) && nrow(threshold_scan_best_dataset()) > 0) {
-      downloadButton("downloadMissingScanBestDataset", "Download best-threshold dataset (CSV)")
-    } else {
-      tags$span("Run threshold scan to enable CSV download.", style = "color: #666; font-size: 12px;")
-    }
-  })
-
   output$downloadMissingScanBestDataset <- downloadHandler(
     filename = function() {
-      paste0("missing_threshold_best_dataset_", Sys.Date(), ".csv")
+      paste0("missing_threshold_current_dataset_", Sys.Date(), ".csv")
     },
     content = function(file) {
-      dataset_to_download <- threshold_scan_best_dataset()
-      if (is.null(dataset_to_download) || nrow(dataset_to_download) == 0) {
-        stop("Run threshold scan first to generate a dataset.")
+      preview <- missing_preview_data()
+      filtered <- apply_missing_filters(
+        predictors = preview$predictors,
+        missing_definition = preview$missing_definition,
+        threshold_cols = input$ml_missing_threshold_cols,
+        threshold_rows = input$ml_missing_threshold_rows
+      )
+      target_filtered <- preview$subset_table[, preview$target_name, drop = FALSE]
+      if (ncol(filtered$filtered_predictors) > 0) {
+        target_filtered <- target_filtered[filtered$keep_rows, , drop = FALSE]
       }
+      dataset_to_download <- cbind(target_filtered, filtered$filtered_predictors)
+      names(dataset_to_download)[1] <- preview$target_name
       utils::write.csv(dataset_to_download, file, row.names = TRUE)
     }
   )
@@ -1156,7 +1157,6 @@ server <- function(input, output, session) {
   })
 
   threshold_scan_results <- reactiveVal(NULL)
-  threshold_scan_best_dataset <- reactiveVal(NULL)
   threshold_scan_status <- reactiveVal("Status: idle (click the button to run exhaustive scan).")
 
   output$ml_threshold_scan_status <- renderText({
@@ -1169,7 +1169,6 @@ server <- function(input, output, session) {
     preview_missing_count <- if (length(preview_missing_mask) > 0) sum(preview_missing_mask) else 0
     if (preview_missing_count == 0) {
       threshold_scan_results(NULL)
-      threshold_scan_best_dataset(NULL)
       threshold_scan_status("Status: skipped. No missing values detected with current definition; exhaustive scan is unnecessary.")
       showNotification("No missing values detected for the selected data/definition. Threshold scan was skipped.", type = "message")
       return(invisible(NULL))
@@ -1196,24 +1195,8 @@ server <- function(input, output, session) {
     threshold_scan_results(results)
     if (!is.null(results) && nrow(results) > 0) {
       best <- results[1, , drop = FALSE]
-      best_filtered <- apply_missing_filters_with_order(
-        predictors = preview$predictors,
-        missing_definition = preview$missing_definition,
-        threshold_cols = best$thr_col,
-        threshold_rows = best$thr_row,
-        order = as.character(best$scan_order)
-      )
-      best_target <- preview$subset_table[, preview$target_name, drop = FALSE]
-      if (ncol(best_filtered$filtered_predictors) > 0) {
-        best_target <- best_target[best_filtered$keep_rows, , drop = FALSE]
-      }
-      best_dataset <- cbind(best_target, best_filtered$filtered_predictors)
-      names(best_dataset)[1] <- preview$target_name
-      threshold_scan_best_dataset(best_dataset)
       updateNumericInput(session, "ml_missing_threshold_cols", value = as.numeric(best$thr_col))
       updateNumericInput(session, "ml_missing_threshold_rows", value = as.numeric(best$thr_row))
-    } else {
-      threshold_scan_best_dataset(NULL)
     }
     elapsed_total <- as.numeric(difftime(Sys.time(), started_at, units = "secs"))
     threshold_scan_status(sprintf(
