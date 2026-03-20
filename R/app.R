@@ -146,7 +146,6 @@ ui <- fluidPage(
     src = getImage("ugplot.png"), height = "50px",
     tags$span("version 1.0", style = "color: gray; font-size: 11px;")
   )),
-  tags$style(".small-input { width: 100px; }"),
   tabsetPanel(
     id = "tabs",
     tabPanel("1) LOAD DATA",
@@ -314,52 +313,73 @@ ui <- fluidPage(
       tags$div(
         style = "display: inline-block; vertical-align: top;",
         selectizeInput("ml_target", "Target column (healthy, cancer, ...)", choices = ""),
-        # Aqui, os inputs para seeds e timeout foram organizados em um fluidRow
         conditionalPanel(
           condition = "input.ml_target != ''",
-          fluidRow(
-            column(2, numericInput("ml_dataset_seedi", "Initial Dataset Seed:", step = 1, value = 1)),
-            column(2, numericInput("ml_dataset_seedf", "Final Dataset Seed:", step = 1, value = 1)),
-            column(2, numericInput("ml_seedi", "Initial Training Seed:", step = 1, value = 1)),
-            column(2, numericInput("ml_seedf", "Final Training Seed:", step = 1, value = 1)),
-            column(2, numericInput("ml_timeout", "Timeout (s):", step = 1, value = 1200))
+          tags$details(
+            class = "ml-collapsible",
+            tags$summary("Seeds"),
+            fluidRow(
+              column(3, numericInput("ml_dataset_seedi", "Initial Dataset Seed:", step = 1, value = 1)),
+              column(3, numericInput("ml_dataset_seedf", "Final Dataset Seed:", step = 1, value = 1)),
+              column(3, numericInput("ml_seedi", "Initial Training Seed:", step = 1, value = 1)),
+              column(3, numericInput("ml_seedf", "Final Training Seed:", step = 1, value = 1))
+            )
+          ),
+          div(
+            class = "ml-threshold-input",
+            numericInput("ml_timeout", "Timeout (s):", step = 1, value = 1200)
           )
         ),
         conditionalPanel(
           condition = "input.ml_target != ''",
           tags$div(
-            tags$h4("Missing Data Strategy"),
-            fluidRow(
-              column(4,
-                checkboxGroupInput(
-                  "ml_missing_definition",
-                  "Consider as missing:",
-                  choices = c("Empty string" = "empty", "NA" = "na", "Zero (0, 0.0, 0.0000)" = "zero"),
-                  selected = c("empty", "na")
+            tags$details(
+              class = "ml-collapsible",
+              tags$summary("Missing Data Strategy"),
+              fluidRow(
+                column(4,
+                  checkboxGroupInput(
+                    "ml_missing_definition",
+                    "Consider as missing:",
+                    choices = c("Empty string" = "empty", "NA" = "na", "Zero (0, 0.0, 0.0000)" = "zero"),
+                    selected = c("empty", "na")
+                  )
+                ),
+                column(4,
+                  selectInput(
+                    "ml_missing_strategy",
+                    "How to handle missing values:",
+                    choices = c(
+                      "Do nothing" = "none",
+                      "Replace with zero" = "replace_zero",
+                      "KNN imputation" = "knn",
+                      "Mean imputation" = "mean",
+                      "missForest imputation" = "missforest",
+                      "methyLImp2 imputation" = "methylimp2"
+                    ),
+                    selected = "none"
+                  )
+                ),
+                column(2,
+                  div(
+                    class = "ml-threshold-input",
+                    numericInput(
+                      "ml_missing_threshold_cols",
+                      "Column removal threshold (% missing)",
+                      min = 0, max = 100, value = 100, step = 1
+                    )
+                  )
+                ),
+                column(2,
+                  div(
+                    class = "ml-threshold-input",
+                    numericInput(
+                      "ml_missing_threshold_rows",
+                      "Sample removal threshold (% missing)",
+                      min = 0, max = 100, value = 100, step = 1
+                    )
+                  )
                 )
-              ),
-              column(4,
-                selectInput(
-                  "ml_missing_strategy",
-                  "Strategy:",
-                  choices = c(
-                    "Do nothing" = "none",
-                    "Remove columns" = "remove_columns",
-                    "Remove samples" = "remove_rows",
-                    "Replace with zero" = "replace_zero",
-                    "KNN imputation" = "knn",
-                    "Mean imputation" = "mean",
-                    "missForest imputation" = "missforest",
-                    "methyLImp2 imputation" = "methylimp2"
-                  ),
-                  selected = "none"
-                )
-              ),
-              column(2,
-                numericInput("ml_missing_threshold_cols", "Column threshold (%)", min = 0, max = 100, value = 50, step = 1)
-              ),
-              column(2,
-                numericInput("ml_missing_threshold_rows", "Sample threshold (%)", min = 0, max = 100, value = 50, step = 1)
               )
             ),
             htmlOutput("ml_missing_summary"),
@@ -520,7 +540,7 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
   train_missing <- build_missing_mask(predictors_train, missing_definition)
   test_missing <- build_missing_mask(predictors_test, missing_definition)
 
-  if (strategy == "remove_columns") {
+  if (ncol(predictors_train) > 0) {
     col_missing_pct <- colMeans(train_missing) * 100
     keep_cols <- names(col_missing_pct[col_missing_pct <= threshold_cols])
     predictors_train <- predictors_train[, keep_cols, drop = FALSE]
@@ -529,7 +549,7 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
     test_missing <- build_missing_mask(predictors_test, missing_definition)
   }
 
-  if (strategy == "remove_rows") {
+  if (ncol(predictors_train) > 0) {
     row_missing_pct <- rowMeans(train_missing) * 100
     keep_rows <- which(row_missing_pct <= threshold_rows)
     train_set <- train_set[keep_rows, , drop = FALSE]
@@ -826,40 +846,60 @@ server <- function(input, output, session) {
     samples_after <- nrow(predictors)
     est_missing_after <- missing_count
 
-    if (strategy == "remove_columns" && ncol(predictors) > 0) {
-      col_missing_pct <- colMeans(missing_mask) * 100
+    filtered_mask <- missing_mask
+    if (ncol(predictors) > 0) {
+      col_missing_pct <- colMeans(filtered_mask) * 100
       keep_cols <- names(col_missing_pct[col_missing_pct <= col_threshold])
-      columns_after <- length(keep_cols)
-      if (columns_after > 0) {
-        est_missing_after <- sum(missing_mask[, keep_cols, drop = FALSE])
-      } else {
-        est_missing_after <- 0
-      }
+      filtered_mask <- filtered_mask[, keep_cols, drop = FALSE]
+      columns_after <- ncol(filtered_mask)
     }
-    if (strategy == "remove_rows" && ncol(predictors) > 0) {
-      row_missing_pct <- rowMeans(missing_mask) * 100
+    if (ncol(filtered_mask) > 0) {
+      row_missing_pct <- rowMeans(filtered_mask) * 100
       keep_rows <- which(row_missing_pct <= row_threshold)
-      samples_after <- length(keep_rows)
-      if (samples_after > 0) {
-        est_missing_after <- sum(missing_mask[keep_rows, , drop = FALSE])
-      } else {
-        est_missing_after <- 0
-      }
+      filtered_mask <- filtered_mask[keep_rows, , drop = FALSE]
+      samples_after <- nrow(filtered_mask)
+    } else {
+      samples_after <- nrow(predictors)
     }
+
+    est_missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
     if (strategy %in% c("replace_zero", "mean", "knn", "missforest", "methylimp2")) {
       est_missing_after <- 0
     }
 
+    make_summary_row <- function(label, before_value, after_value) {
+      row_class <- if (!identical(before_value, after_value)) "ml-summary-row-changed" else ""
+      tags$tr(
+        class = row_class,
+        tags$td(label),
+        tags$td(as.character(before_value)),
+        tags$td(as.character(after_value))
+      )
+    }
+
     tags$div(
       tags$h5("Dataset Missingness Summary"),
-      tags$ul(
-        tags$li(paste("Number of features:", ncol(predictors))),
-        tags$li(paste("Number of samples:", nrow(predictors))),
-        tags$li(paste("Missing cells:", missing_count)),
-        tags$li(paste("Missingness (%):", paste0(missing_pct, "%"))),
-        tags$li(paste("Estimated features after strategy:", columns_after)),
-        tags$li(paste("Estimated samples after strategy:", samples_after)),
-        tags$li(paste("Estimated missing cells after strategy:", est_missing_after))
+      tags$table(
+        class = "ml-summary-table",
+        tags$thead(
+          tags$tr(
+            tags$th("Metric"),
+            tags$th("Current"),
+            tags$th("After configuration")
+          )
+        ),
+        tags$tbody(
+          make_summary_row("Number of features", ncol(predictors), columns_after),
+          make_summary_row("Number of samples", nrow(predictors), samples_after),
+          make_summary_row("Missing cells", missing_count, est_missing_after),
+          make_summary_row("Missingness (%)", paste0(missing_pct, "%"),
+            if ((columns_after * samples_after) > 0) {
+              paste0(round(100 * est_missing_after / (columns_after * samples_after), 2), "%")
+            } else {
+              "0%"
+            }
+          )
+        )
       )
     )
   })
