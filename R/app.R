@@ -383,8 +383,12 @@ ui <- fluidPage(
                 ),
                 htmlOutput("ml_missing_summary"),
                 htmlOutput("ml_threshold_scan_summary"),
-                downloadButton("downloadMissingScanBestDataset", "Download best-threshold dataset (CSV)"),
-                DT::DTOutput("ml_threshold_scan_table")
+                actionButton("ml_use_best_thresholds", "Use best thresholds in fields"),
+                uiOutput("downloadMissingScanBestDatasetUI"),
+                fluidRow(
+                  column(6, plotOutput("ml_target_plot_original", height = "220px")),
+                  column(6, plotOutput("ml_target_plot_filtered", height = "220px"))
+                )
               )
             ),
             verbatimTextOutput("console_output"),
@@ -968,15 +972,24 @@ server <- function(input, output, session) {
     }
   })
 
+  output$downloadMissingScanBestDatasetUI <- renderUI({
+    if (!is.null(threshold_scan_best_dataset()) && nrow(threshold_scan_best_dataset()) > 0) {
+      downloadButton("downloadMissingScanBestDataset", "Download best-threshold dataset (CSV)")
+    } else {
+      tags$span("Run threshold scan to enable CSV download.", style = "color: #666; font-size: 12px;")
+    }
+  })
+
   output$downloadMissingScanBestDataset <- downloadHandler(
     filename = function() {
       paste0("missing_threshold_best_dataset_", Sys.Date(), ".csv")
     },
     content = function(file) {
       dataset_to_download <- threshold_scan_best_dataset()
-      validate(need(!is.null(dataset_to_download) && nrow(dataset_to_download) > 0,
-        "Run threshold scan first to generate a dataset."))
-      write.csv(dataset_to_download, file, row.names = TRUE)
+      if (is.null(dataset_to_download) || nrow(dataset_to_download) == 0) {
+        stop("Run threshold scan first to generate a dataset.")
+      }
+      utils::write.csv(dataset_to_download, file, row.names = TRUE)
     }
   )
 
@@ -1205,6 +1218,18 @@ server <- function(input, output, session) {
     ))
   })
 
+  observeEvent(input$ml_use_best_thresholds, {
+    results <- threshold_scan_results()
+    req(!is.null(results), nrow(results) > 0)
+    best <- results[1, , drop = FALSE]
+    updateNumericInput(session, "ml_missing_threshold_cols", value = as.numeric(best$thr_col))
+    updateNumericInput(session, "ml_missing_threshold_rows", value = as.numeric(best$thr_row))
+    showNotification(
+      sprintf("Applied best thresholds: columns=%s%%, rows=%s%%.", best$thr_col, best$thr_row),
+      type = "message"
+    )
+  })
+
   output$ml_threshold_scan_summary <- renderUI({
     results <- threshold_scan_results()
     req(nrow(results) > 0)
@@ -1233,23 +1258,40 @@ server <- function(input, output, session) {
     )
   })
 
-  output$ml_threshold_scan_table <- DT::renderDT({
-    results <- threshold_scan_results()
-    req(nrow(results) > 0)
-    top_results <- head(results[, c(
-      "thr_col", "thr_row", "scan_order", "cross_point", "n_cols_after", "n_rows_after",
-      "missing_pct_after", "filled_cells", "rows_retained", "cols_retained",
-      "tradeoff_score", "pareto"
-    ), drop = FALSE], 100)
-    DT::datatable(
-      top_results,
-      rownames = FALSE,
-      options = list(pageLength = 10, scrollX = TRUE),
-      caption = htmltools::tags$caption(
-        style = "caption-side: top; text-align: left;",
-        "Top 100 combinations ranked by Pareto flag + tradeoff score (high rows/cols and low missingness)."
-      )
+  output$ml_target_plot_original <- renderPlot({
+    preview <- missing_preview_data()
+    target_values <- preview$subset_table[, preview$target_name, drop = TRUE]
+    if (is.numeric(target_values)) {
+      hist(target_values, breaks = 20, main = "Target distribution (original)",
+        xlab = preview$target_name, col = "#9ecae1", border = "white")
+    } else {
+      counts <- sort(table(target_values), decreasing = TRUE)
+      barplot(counts, las = 2, col = "#9ecae1", main = "Target counts (original)",
+        ylab = "Count")
+    }
+  })
+
+  output$ml_target_plot_filtered <- renderPlot({
+    preview <- missing_preview_data()
+    filtered <- apply_missing_filters(
+      predictors = preview$predictors,
+      missing_definition = preview$missing_definition,
+      threshold_cols = input$ml_missing_threshold_cols,
+      threshold_rows = input$ml_missing_threshold_rows
     )
+    target_filtered <- preview$subset_table[, preview$target_name, drop = FALSE]
+    if (ncol(filtered$filtered_predictors) > 0) {
+      target_filtered <- target_filtered[filtered$keep_rows, , drop = FALSE]
+    }
+    target_values <- target_filtered[, 1, drop = TRUE]
+    if (is.numeric(target_values)) {
+      hist(target_values, breaks = 20, main = "Target distribution (filtered)",
+        xlab = preview$target_name, col = "#74c476", border = "white")
+    } else {
+      counts <- sort(table(target_values), decreasing = TRUE)
+      barplot(counts, las = 2, col = "#74c476", main = "Target counts (filtered)",
+        ylab = "Count")
+    }
   })
 
   observeEvent(input$column_checkbox_group, {
