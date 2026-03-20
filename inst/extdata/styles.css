@@ -99,9 +99,9 @@ button.ml-section-toggle {
   text-align: left !important;
   font-size: 19px;
   font-weight: 700;
-  color: #2b3a47;
-  background: #eceff3 !important;
-  border: 1px solid #d5d9de !important;
+  color: #ffffff;
+  background: #2e7d32 !important;
+  border: 1px solid #256b2a !important;
   border-radius: 8px;
   box-shadow: none !important;
 }
@@ -109,9 +109,9 @@ button.ml-section-toggle {
 button.ml-section-toggle:hover,
 button.ml-section-toggle:active,
 button.ml-section-toggle:focus {
-  color: #2b3a47;
-  background: #e3e8ed !important;
-  border: 1px solid #cbd2d9 !important;
+  color: #ffffff;
+  background: #256b2a !important;
+  border: 1px solid #1f5a24 !important;
   outline: none;
 }
 
@@ -133,7 +133,12 @@ button.ml-section-toggle:focus {
 }
 
 .ml-missing-stack .ml-threshold-input {
-  width: 260px;
+  width: 100%;
+  max-width: 460px;
+}
+
+.ml-missing-stack .ml-threshold-input label {
+  white-space: nowrap;
 }
 
 .ml-threshold-input {
