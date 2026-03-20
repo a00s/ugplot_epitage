@@ -388,6 +388,9 @@ ui <- fluidPage(
                 fluidRow(
                   column(6, plotOutput("ml_target_plot_original", height = "220px")),
                   column(6, plotOutput("ml_target_plot_filtered", height = "220px"))
+                ),
+                fluidRow(
+                  column(12, plotOutput("ml_target_plot_removed", height = "220px"))
                 )
               )
             ),
@@ -1258,21 +1261,9 @@ server <- function(input, output, session) {
     )
   })
 
-  output$ml_target_plot_original <- renderPlot({
+  target_distribution_data <- reactive({
     preview <- missing_preview_data()
     target_values <- preview$subset_table[, preview$target_name, drop = TRUE]
-    if (is.numeric(target_values)) {
-      hist(target_values, breaks = 20, main = "Target distribution (original)",
-        xlab = preview$target_name, col = "#9ecae1", border = "white")
-    } else {
-      counts <- sort(table(target_values), decreasing = TRUE)
-      barplot(counts, las = 2, col = "#9ecae1", main = "Target counts (original)",
-        ylab = "Count")
-    }
-  })
-
-  output$ml_target_plot_filtered <- renderPlot({
-    preview <- missing_preview_data()
     filtered <- apply_missing_filters(
       predictors = preview$predictors,
       missing_definition = preview$missing_definition,
@@ -1283,14 +1274,76 @@ server <- function(input, output, session) {
     if (ncol(filtered$filtered_predictors) > 0) {
       target_filtered <- target_filtered[filtered$keep_rows, , drop = FALSE]
     }
-    target_values <- target_filtered[, 1, drop = TRUE]
+    list(
+      target_name = preview$target_name,
+      original = target_values,
+      filtered = target_filtered[, 1, drop = TRUE]
+    )
+  })
+
+  output$ml_target_plot_original <- renderPlot({
+    dist_data <- target_distribution_data()
+    target_values <- dist_data$original
+    if (is.numeric(target_values)) {
+      hist(target_values, breaks = 20, main = "Target distribution (original)",
+        xlab = dist_data$target_name, col = "#9ecae1", border = "white")
+    } else {
+      counts <- sort(table(target_values), decreasing = TRUE)
+      barplot(counts, las = 2, col = "#9ecae1", main = "Target counts (original)",
+        ylab = "Count")
+    }
+  })
+
+  output$ml_target_plot_filtered <- renderPlot({
+    dist_data <- target_distribution_data()
+    target_values <- dist_data$filtered
     if (is.numeric(target_values)) {
       hist(target_values, breaks = 20, main = "Target distribution (filtered)",
-        xlab = preview$target_name, col = "#74c476", border = "white")
+        xlab = dist_data$target_name, col = "#74c476", border = "white")
     } else {
       counts <- sort(table(target_values), decreasing = TRUE)
       barplot(counts, las = 2, col = "#74c476", main = "Target counts (filtered)",
         ylab = "Count")
+    }
+  })
+
+  output$ml_target_plot_removed <- renderPlot({
+    dist_data <- target_distribution_data()
+    original_values <- dist_data$original
+    filtered_values <- dist_data$filtered
+
+    if (is.numeric(original_values)) {
+      breaks <- hist(original_values, breaks = 20, plot = FALSE)$breaks
+      original_hist <- hist(original_values, breaks = breaks, plot = FALSE)$counts
+      filtered_hist <- hist(filtered_values, breaks = breaks, plot = FALSE)$counts
+      removed_counts <- pmax(original_hist - filtered_hist, 0)
+      mids <- head(breaks, -1) + diff(breaks) / 2
+      barplot(
+        removed_counts,
+        names.arg = round(mids, 1),
+        las = 2,
+        col = "#fb6a4a",
+        border = "white",
+        main = "Removed samples per target range (original - filtered)",
+        xlab = dist_data$target_name,
+        ylab = "Removed count"
+      )
+    } else {
+      original_counts <- table(original_values)
+      filtered_counts <- table(filtered_values)
+      all_levels <- union(names(original_counts), names(filtered_counts))
+      removed_counts <- as.numeric(original_counts[all_levels]) - as.numeric(filtered_counts[all_levels])
+      removed_counts[is.na(removed_counts)] <- 0
+      removed_counts <- pmax(removed_counts, 0)
+      names(removed_counts) <- all_levels
+      barplot(
+        removed_counts,
+        las = 2,
+        col = "#fb6a4a",
+        border = "white",
+        main = "Removed samples per target class (original - filtered)",
+        ylab = "Removed count"
+      )
     }
   })
 
