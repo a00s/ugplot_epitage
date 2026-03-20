@@ -1024,6 +1024,14 @@ server <- function(input, output, session) {
 
   observeEvent(input$ml_run_threshold_scan, {
     preview <- missing_preview_data()
+    preview_missing_mask <- build_missing_mask(preview$predictors, preview$missing_definition)
+    preview_missing_count <- if (length(preview_missing_mask) > 0) sum(preview_missing_mask) else 0
+    if (preview_missing_count == 0) {
+      threshold_scan_results(NULL)
+      threshold_scan_status("Status: skipped. No missing values detected with current definition; exhaustive scan is unnecessary.")
+      showNotification("No missing values detected for the selected data/definition. Threshold scan was skipped.", type = "message")
+      return(invisible(NULL))
+    }
     threshold_scan_status("Status: starting exhaustive scan (0-100% x 0-100%)...")
     started_at <- Sys.time()
     progress_bar <- shiny::Progress$new(session, min = 0, max = 1)
