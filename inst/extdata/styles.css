@@ -85,3 +85,82 @@
   border: none;
   width: 300px;
 }
+
+.small-input {
+  width: 100px;
+}
+
+.ml-collapsible {
+  width: 100%;
+  margin-top: 12px;
+  border: 1px solid #d5d9de;
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.ml-collapsible summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.2px;
+  color: #2b3a47;
+  background: #eef1f4;
+  border-bottom: 1px solid #d5d9de;
+  padding: 12px 16px;
+}
+
+.ml-collapsible summary::-webkit-details-marker {
+  display: none;
+}
+
+.ml-collapsible summary::after {
+  content: "▸";
+  font-size: 16px;
+  color: #4a5a68;
+  transition: transform 0.2s ease-in-out;
+}
+
+.ml-collapsible[open] summary::after {
+  transform: rotate(90deg);
+}
+
+.ml-collapsible[open] summary {
+  background: #e7ecef;
+}
+
+.ml-threshold-input {
+  width: 110px;
+}
+
+.ml-collapsible > :not(summary) {
+  padding: 14px 16px 8px 16px;
+}
+
+.ml-summary-table {
+  width: 100%;
+  max-width: 700px;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 14px;
+}
+
+.ml-summary-table th,
+.ml-summary-table td {
+  border: 1px solid #dddddd;
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.ml-summary-table th {
+  background: #f1f3f5;
+}
+
+.ml-summary-row-changed td {
+  background: #fff3cd;
+}
