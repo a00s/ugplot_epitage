@@ -99,11 +99,11 @@ button.ml-section-toggle,
   margin-top: 12px;
   padding: 10px 14px;
   text-align: left !important;
-  font-size: 19px;
-  font-weight: 700;
+  font-size: 16px;
+  font-weight: 600;
   color: #ffffff;
-  background: #2e7d32 !important;
-  border: 1px solid #256b2a !important;
+  background: #6f7781 !important;
+  border: 1px solid #626a74 !important;
   border-radius: 8px;
   box-shadow: none !important;
   background-image: none !important;
@@ -119,16 +119,16 @@ button.ml-section-toggle:focus,
 #ml_toggle_missing:active,
 #ml_toggle_missing:focus {
   color: #ffffff;
-  background: #256b2a !important;
-  border: 1px solid #1f5a24 !important;
+  background: #626a74 !important;
+  border: 1px solid #565e68 !important;
   outline: none;
 }
 
 .ml-section-panel {
   width: 100%;
-  border: 1px solid #d9dee5;
+  border: 1px solid #d3d8de;
   border-radius: 8px;
-  background: #fafbfc;
+  background: #eef1f4;
   padding: 14px 16px 12px 16px;
   margin-top: 8px;
 }
