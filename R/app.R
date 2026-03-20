@@ -315,14 +315,17 @@ ui <- fluidPage(
         selectizeInput("ml_target", "Target column (healthy, cancer, ...)", choices = ""),
         conditionalPanel(
           condition = "input.ml_target != ''",
-          tags$details(
-            class = "ml-collapsible",
-            tags$summary("Seeds"),
-            fluidRow(
-              column(3, numericInput("ml_dataset_seedi", "Initial Dataset Seed:", step = 1, value = 1)),
-              column(3, numericInput("ml_dataset_seedf", "Final Dataset Seed:", step = 1, value = 1)),
-              column(3, numericInput("ml_seedi", "Initial Training Seed:", step = 1, value = 1)),
-              column(3, numericInput("ml_seedf", "Final Training Seed:", step = 1, value = 1))
+          actionButton("ml_toggle_seeds", "\u25b8 Seeds", class = "ml-section-toggle"),
+          conditionalPanel(
+            condition = "input.ml_toggle_seeds % 2 == 1",
+            div(
+              class = "ml-section-panel",
+              fluidRow(
+                column(3, numericInput("ml_dataset_seedi", "Initial Dataset Seed:", step = 1, value = 1)),
+                column(3, numericInput("ml_dataset_seedf", "Final Dataset Seed:", step = 1, value = 1)),
+                column(3, numericInput("ml_seedi", "Initial Training Seed:", step = 1, value = 1)),
+                column(3, numericInput("ml_seedf", "Final Training Seed:", step = 1, value = 1))
+              )
             )
           ),
           div(
@@ -333,55 +336,58 @@ ui <- fluidPage(
         conditionalPanel(
           condition = "input.ml_target != ''",
           tags$div(
-            tags$details(
-              class = "ml-collapsible",
-              tags$summary("Missing Data Strategy"),
-              fluidRow(
-                column(4,
-                  checkboxGroupInput(
-                    "ml_missing_definition",
-                    "Consider as missing:",
-                    choices = c("Empty string" = "empty", "NA" = "na", "Zero (0, 0.0, 0.0000)" = "zero"),
-                    selected = c("empty", "na")
-                  )
-                ),
-                column(4,
-                  selectInput(
-                    "ml_missing_strategy",
-                    "How to handle missing values:",
-                    choices = c(
-                      "Do nothing" = "none",
-                      "Replace with zero" = "replace_zero",
-                      "KNN imputation" = "knn",
-                      "Mean imputation" = "mean",
-                      "missForest imputation" = "missforest",
-                      "methyLImp2 imputation" = "methylimp2"
-                    ),
-                    selected = "none"
-                  )
-                ),
-                column(2,
-                  div(
-                    class = "ml-threshold-input",
-                    numericInput(
-                      "ml_missing_threshold_cols",
-                      "Remove columns when missingness is above (%)",
-                      min = 0, max = 100, value = 100, step = 1
+            actionButton("ml_toggle_missing", "\u25b8 Missing Data Strategy", class = "ml-section-toggle"),
+            conditionalPanel(
+              condition = "input.ml_toggle_missing % 2 == 1",
+              div(
+                class = "ml-section-panel",
+                fluidRow(
+                  column(4,
+                    checkboxGroupInput(
+                      "ml_missing_definition",
+                      "Consider as missing:",
+                      choices = c("Empty string" = "empty", "NA" = "na", "Zero (0, 0.0, 0.0000)" = "zero"),
+                      selected = c("empty", "na")
+                    )
+                  ),
+                  column(4,
+                    selectInput(
+                      "ml_missing_strategy",
+                      "How to handle missing values:",
+                      choices = c(
+                        "Do nothing" = "none",
+                        "Replace with zero" = "replace_zero",
+                        "KNN imputation" = "knn",
+                        "Mean imputation" = "mean",
+                        "missForest imputation" = "missforest",
+                        "methyLImp2 imputation" = "methylimp2"
+                      ),
+                      selected = "none"
+                    )
+                  ),
+                  column(2,
+                    div(
+                      class = "ml-threshold-input",
+                      numericInput(
+                        "ml_missing_threshold_cols",
+                        "Remove columns when missingness is above (%)",
+                        min = 0, max = 100, value = 100, step = 1
+                      )
+                    )
+                  ),
+                  column(2,
+                    div(
+                      class = "ml-threshold-input",
+                      numericInput(
+                        "ml_missing_threshold_rows",
+                        "Remove samples when missingness is above (%)",
+                        min = 0, max = 100, value = 100, step = 1
+                      )
                     )
                   )
                 ),
-                column(2,
-                  div(
-                    class = "ml-threshold-input",
-                    numericInput(
-                      "ml_missing_threshold_rows",
-                      "Remove samples when missingness is above (%)",
-                      min = 0, max = 100, value = 100, step = 1
-                    )
-                  )
-                )
-              ),
-              htmlOutput("ml_missing_summary")
+                htmlOutput("ml_missing_summary")
+              )
             ),
             verbatimTextOutput("console_output"),
             column(
@@ -820,6 +826,17 @@ server <- function(input, output, session) {
   output$ml_error_message <- renderUI({
     tags$span(ml_error_message_text(), style = "color: black; font-size: 12px;")
   })
+
+  observeEvent(input$ml_toggle_seeds, {
+    is_open <- (input$ml_toggle_seeds %% 2) == 1
+    updateActionButton(session, "ml_toggle_seeds", label = if (is_open) "\u25be Seeds" else "\u25b8 Seeds")
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$ml_toggle_missing, {
+    is_open <- (input$ml_toggle_missing %% 2) == 1
+    updateActionButton(session, "ml_toggle_missing",
+      label = if (is_open) "\u25be Missing Data Strategy" else "\u25b8 Missing Data Strategy")
+  }, ignoreInit = TRUE)
 
   output$ml_missing_summary <- renderUI({
     req(input$ml_target)

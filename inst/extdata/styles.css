@@ -90,56 +90,41 @@
   width: 100px;
 }
 
-.ml-collapsible {
+.ml-section-toggle {
+  display: block;
   width: 100%;
   margin-top: 12px;
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 19px;
+  font-weight: 700;
+  color: #2b3a47;
+  background: #eceff3;
   border: 1px solid #d5d9de;
   border-radius: 8px;
-  background: #ffffff;
-  overflow: hidden;
 }
 
-.ml-collapsible summary {
-  list-style: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  cursor: pointer;
-  font-weight: 700;
-  font-size: 18px;
-  letter-spacing: 0.2px;
+.ml-section-toggle:hover,
+.ml-section-toggle:active,
+.ml-section-toggle:focus {
   color: #2b3a47;
-  background: #eef1f4;
-  border-bottom: 1px solid #d5d9de;
-  padding: 12px 16px;
+  background: #e3e8ed;
+  border: 1px solid #cbd2d9;
+  outline: none;
 }
 
-.ml-collapsible summary::-webkit-details-marker {
-  display: none;
-}
-
-.ml-collapsible summary::after {
-  content: "▸";
-  font-size: 16px;
-  color: #4a5a68;
-  transition: transform 0.2s ease-in-out;
-}
-
-.ml-collapsible[open] summary::after {
-  transform: rotate(90deg);
-}
-
-.ml-collapsible[open] summary {
-  background: #e7ecef;
+.ml-section-panel {
+  width: 100%;
+  border: 1px solid #dfe3e8;
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  background: #ffffff;
+  padding: 12px 14px 8px 14px;
+  margin-top: -6px;
 }
 
 .ml-threshold-input {
   width: 110px;
-}
-
-.ml-collapsible > :not(summary) {
-  padding: 14px 16px 8px 16px;
 }
 
 .ml-summary-table {
@@ -160,12 +145,25 @@
   padding: 8px 12px;
   text-align: left;
   vertical-align: middle;
+  white-space: nowrap;
 }
 
 .ml-summary-table th {
   background: #f5f7fa;
   color: #2f3b46;
   font-weight: 700;
+}
+
+.ml-summary-table th:nth-child(1),
+.ml-summary-table td:nth-child(1) {
+  min-width: 220px;
+}
+
+.ml-summary-table th:nth-child(2),
+.ml-summary-table th:nth-child(3),
+.ml-summary-table td:nth-child(2),
+.ml-summary-table td:nth-child(3) {
+  min-width: 130px;
 }
 
 .ml-summary-table tbody tr:nth-child(even) td {
