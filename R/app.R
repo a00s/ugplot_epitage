@@ -383,6 +383,7 @@ ui <- fluidPage(
                 ),
                 htmlOutput("ml_missing_summary"),
                 htmlOutput("ml_threshold_scan_summary"),
+                downloadButton("downloadMissingScanBestDataset", "Download best-threshold dataset (CSV)"),
                 DT::DTOutput("ml_threshold_scan_table")
               )
             ),
@@ -550,24 +551,43 @@ apply_missing_filters <- function(predictors, missing_definition,
 
 compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
                                               progress_callback = NULL, status_callback = NULL) {
-  threshold_values <- 0:100
+  missing_mask <- build_missing_mask(predictors, missing_definition)
   original_rows <- nrow(predictors)
   original_cols <- ncol(predictors)
-  total_iterations <- length(threshold_values)^2
+  col_missing_pct <- if (ncol(missing_mask) > 0) colMeans(missing_mask) * 100 else numeric(0)
+  threshold_cols <- sort(unique(pmin(100, pmax(0, ceiling(c(0, 100, col_missing_pct))))))
+  total_iterations <- 0
+  if (length(threshold_cols) == 0) {
+    threshold_cols <- c(0, 100)
+  }
   idx <- 0
-  metrics_list <- vector("list", total_iterations)
+  metrics_list <- list()
 
-  for (thr_col in threshold_values) {
-    for (thr_row in threshold_values) {
+  for (thr_col in threshold_cols) {
+    if (ncol(missing_mask) > 0) {
+      keep_cols <- names(col_missing_pct[col_missing_pct <= thr_col])
+      filtered_mask_cols <- missing_mask[, keep_cols, drop = FALSE]
+    } else {
+      filtered_mask_cols <- missing_mask
+    }
+    n_cols_after <- ncol(filtered_mask_cols)
+    if (n_cols_after > 0) {
+      row_missing_pct <- rowMeans(filtered_mask_cols) * 100
+      threshold_rows <- sort(unique(pmin(100, pmax(0, ceiling(c(0, 100, row_missing_pct))))))
+    } else {
+      row_missing_pct <- numeric(0)
+      threshold_rows <- c(0, 100)
+    }
+    total_iterations <- total_iterations + length(threshold_rows)
+
+    for (thr_row in threshold_rows) {
       idx <- idx + 1
-      filtered <- apply_missing_filters(
-        predictors = predictors,
-        missing_definition = missing_definition,
-        threshold_cols = thr_col,
-        threshold_rows = thr_row
-      )
-      filtered_mask <- filtered$filtered_mask
-      n_cols_after <- ncol(filtered_mask)
+      if (n_cols_after > 0) {
+        keep_rows <- which(row_missing_pct <= thr_row)
+        filtered_mask <- filtered_mask_cols[keep_rows, , drop = FALSE]
+      } else {
+        filtered_mask <- filtered_mask_cols
+      }
       n_rows_after <- nrow(filtered_mask)
       missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
       total_after <- n_cols_after * n_rows_after
@@ -592,11 +612,11 @@ compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
       )
     }
     if (!is.null(progress_callback)) {
-      progress_callback((thr_col + 1) / length(threshold_values))
+      progress_callback(which(threshold_cols == thr_col)[1] / length(threshold_cols))
     }
     if (!is.null(status_callback)) {
-      status_callback(sprintf("Scanning... column threshold %d%% of 100%% (%d/%d combinations)",
-        thr_col, idx, total_iterations))
+      status_callback(sprintf("Scanning... column threshold %d%% (%d evaluated combinations)",
+        thr_col, idx))
     }
   }
 
@@ -857,6 +877,18 @@ server <- function(input, output, session) {
     }
   })
 
+  output$downloadMissingScanBestDataset <- downloadHandler(
+    filename = function() {
+      paste0("missing_threshold_best_dataset_", Sys.Date(), ".csv")
+    },
+    content = function(file) {
+      dataset_to_download <- threshold_scan_best_dataset()
+      validate(need(!is.null(dataset_to_download) && nrow(dataset_to_download) > 0,
+        "Run threshold scan first to generate a dataset."))
+      write.csv(dataset_to_download, file, row.names = TRUE)
+    }
+  )
+
   ####################### TAB 1) LOAD DATA
   observeEvent(input$file1, {
     file_click_count(file_click_count() + 1)
@@ -948,6 +980,8 @@ server <- function(input, output, session) {
       missing_definition <- character(0)
     }
     list(
+      subset_table = subset_table,
+      target_name = target_name,
       predictors = predictors,
       missing_definition = missing_definition
     )
@@ -1016,6 +1050,7 @@ server <- function(input, output, session) {
   })
 
   threshold_scan_results <- reactiveVal(NULL)
+  threshold_scan_best_dataset <- reactiveVal(NULL)
   threshold_scan_status <- reactiveVal("Status: idle (click the button to run exhaustive scan).")
 
   output$ml_threshold_scan_status <- renderText({
@@ -1028,6 +1063,7 @@ server <- function(input, output, session) {
     preview_missing_count <- if (length(preview_missing_mask) > 0) sum(preview_missing_mask) else 0
     if (preview_missing_count == 0) {
       threshold_scan_results(NULL)
+      threshold_scan_best_dataset(NULL)
       threshold_scan_status("Status: skipped. No missing values detected with current definition; exhaustive scan is unnecessary.")
       showNotification("No missing values detected for the selected data/definition. Threshold scan was skipped.", type = "message")
       return(invisible(NULL))
@@ -1052,6 +1088,24 @@ server <- function(input, output, session) {
       }
     )
     threshold_scan_results(results)
+    if (!is.null(results) && nrow(results) > 0) {
+      best <- results[1, , drop = FALSE]
+      best_filtered <- apply_missing_filters(
+        predictors = preview$predictors,
+        missing_definition = preview$missing_definition,
+        threshold_cols = best$thr_col,
+        threshold_rows = best$thr_row
+      )
+      best_target <- preview$subset_table[, preview$target_name, drop = FALSE]
+      if (ncol(best_filtered$filtered_predictors) > 0) {
+        best_target <- best_target[best_filtered$keep_rows, , drop = FALSE]
+      }
+      best_dataset <- cbind(best_target, best_filtered$filtered_predictors)
+      names(best_dataset)[1] <- preview$target_name
+      threshold_scan_best_dataset(best_dataset)
+    } else {
+      threshold_scan_best_dataset(NULL)
+    }
     elapsed_total <- as.numeric(difftime(Sys.time(), started_at, units = "secs"))
     threshold_scan_status(sprintf(
       "Status: completed. Tested %s combinations in %.1fs.",
