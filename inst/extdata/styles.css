@@ -91,25 +91,55 @@
 }
 
 .ml-collapsible {
-  margin-top: 8px;
-  border: 1px solid #dcdcdc;
-  border-radius: 6px;
-  background: #fafafa;
-  padding: 6px 10px;
+  width: 100%;
+  margin-top: 12px;
+  border: 1px solid #d5d9de;
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
 }
 
 .ml-collapsible summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
   cursor: pointer;
-  font-weight: 600;
-  color: #2c3e50;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.2px;
+  color: #2b3a47;
+  background: #eef1f4;
+  border-bottom: 1px solid #d5d9de;
+  padding: 12px 16px;
+}
+
+.ml-collapsible summary::-webkit-details-marker {
+  display: none;
+}
+
+.ml-collapsible summary::after {
+  content: "▸";
+  font-size: 16px;
+  color: #4a5a68;
+  transition: transform 0.2s ease-in-out;
+}
+
+.ml-collapsible[open] summary::after {
+  transform: rotate(90deg);
 }
 
 .ml-collapsible[open] summary {
-  margin-bottom: 8px;
+  background: #e7ecef;
 }
 
 .ml-threshold-input {
   width: 110px;
+}
+
+.ml-collapsible > :not(summary) {
+  padding: 14px 16px 8px 16px;
 }
 
 .ml-summary-table {
