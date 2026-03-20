@@ -1026,20 +1026,24 @@ server <- function(input, output, session) {
     preview <- missing_preview_data()
     threshold_scan_status("Status: starting exhaustive scan (0-100% x 0-100%)...")
     started_at <- Sys.time()
-    withProgress(message = "Running exhaustive threshold scan", value = 0, {
-      results <- compute_exhaustive_threshold_scan(
-        predictors = preview$predictors,
-        missing_definition = preview$missing_definition,
-        progress_callback = function(progress_value) {
-          setProgress(value = progress_value)
-        },
-        status_callback = function(msg) {
-          elapsed <- as.numeric(difftime(Sys.time(), started_at, units = "secs"))
-          threshold_scan_status(sprintf("Status: %s | elapsed: %.1fs", msg, elapsed))
-        }
-      )
-      threshold_scan_results(results)
-    })
+    progress_bar <- shiny::Progress$new(session, min = 0, max = 1)
+    on.exit(progress_bar$close(), add = TRUE)
+    progress_bar$set(message = "Running exhaustive threshold scan", value = 0)
+    results <- compute_exhaustive_threshold_scan(
+      predictors = preview$predictors,
+      missing_definition = preview$missing_definition,
+      progress_callback = function(progress_value) {
+        progress_bar$set(
+          value = progress_value,
+          detail = sprintf("%.0f%% completed", 100 * progress_value)
+        )
+      },
+      status_callback = function(msg) {
+        elapsed <- as.numeric(difftime(Sys.time(), started_at, units = "secs"))
+        threshold_scan_status(sprintf("Status: %s | elapsed: %.1fs", msg, elapsed))
+      }
+    )
+    threshold_scan_results(results)
     elapsed_total <- as.numeric(difftime(Sys.time(), started_at, units = "secs"))
     threshold_scan_status(sprintf(
       "Status: completed. Tested %s combinations in %.1fs.",
