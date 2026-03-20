@@ -378,7 +378,8 @@ ui <- fluidPage(
                       min = 0, max = 100, value = 100, step = 1
                     )
                   ),
-                  actionButton("ml_run_threshold_scan", "Run exhaustive threshold scan (0-100%)")
+                  actionButton("ml_run_threshold_scan", "Run exhaustive threshold scan (0-100%)"),
+                  tags$div(style = "margin-top: 8px;", textOutput("ml_threshold_scan_status"))
                 ),
                 htmlOutput("ml_missing_summary"),
                 htmlOutput("ml_threshold_scan_summary"),
@@ -547,41 +548,73 @@ apply_missing_filters <- function(predictors, missing_definition,
   )
 }
 
-compute_exhaustive_threshold_scan <- function(predictors, missing_definition) {
+compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
+                                              progress_callback = NULL, status_callback = NULL) {
   threshold_values <- 0:100
-  grid <- expand.grid(thr_col = threshold_values, thr_row = threshold_values, KEEP.OUT.ATTRS = FALSE)
+  original_rows <- nrow(predictors)
+  original_cols <- ncol(predictors)
+  total_iterations <- length(threshold_values)^2
+  idx <- 0
+  metrics_list <- vector("list", total_iterations)
 
-  grid_metrics <- lapply(seq_len(nrow(grid)), function(i) {
-    thr_col <- grid$thr_col[i]
-    thr_row <- grid$thr_row[i]
-    filtered <- apply_missing_filters(
-      predictors = predictors,
-      missing_definition = missing_definition,
-      threshold_cols = thr_col,
-      threshold_rows = thr_row
-    )
-    filtered_mask <- filtered$filtered_mask
-    n_cols_after <- ncol(filtered_mask)
-    n_rows_after <- nrow(filtered_mask)
-    missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
-    total_after <- n_cols_after * n_rows_after
-    missing_pct_after <- if (total_after > 0) (100 * missing_after / total_after) else 0
-    filled_cells <- total_after - missing_after
+  for (thr_col in threshold_values) {
+    for (thr_row in threshold_values) {
+      idx <- idx + 1
+      filtered <- apply_missing_filters(
+        predictors = predictors,
+        missing_definition = missing_definition,
+        threshold_cols = thr_col,
+        threshold_rows = thr_row
+      )
+      filtered_mask <- filtered$filtered_mask
+      n_cols_after <- ncol(filtered_mask)
+      n_rows_after <- nrow(filtered_mask)
+      missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
+      total_after <- n_cols_after * n_rows_after
+      missing_pct_after <- if (total_after > 0) (100 * missing_after / total_after) else 0
+      filled_cells <- total_after - missing_after
+      rows_retained <- if (original_rows > 0) n_rows_after / original_rows else 0
+      cols_retained <- if (original_cols > 0) n_cols_after / original_cols else 0
+      tradeoff_score <- ((rows_retained + cols_retained) / 2) - (missing_pct_after / 100)
 
-    data.frame(
-      thr_col = thr_col,
-      thr_row = thr_row,
-      n_cols_after = n_cols_after,
-      n_rows_after = n_rows_after,
-      total_cells_after = total_after,
-      missing_cells_after = missing_after,
-      filled_cells = filled_cells,
-      missing_pct_after = round(missing_pct_after, 2)
-    )
-  })
+      metrics_list[[idx]] <- data.frame(
+        thr_col = thr_col,
+        thr_row = thr_row,
+        n_cols_after = n_cols_after,
+        n_rows_after = n_rows_after,
+        total_cells_after = total_after,
+        missing_cells_after = missing_after,
+        filled_cells = filled_cells,
+        missing_pct_after = round(missing_pct_after, 2),
+        rows_retained = rows_retained,
+        cols_retained = cols_retained,
+        tradeoff_score = tradeoff_score
+      )
+    }
+    if (!is.null(progress_callback)) {
+      progress_callback((thr_col + 1) / length(threshold_values))
+    }
+    if (!is.null(status_callback)) {
+      status_callback(sprintf("Scanning... column threshold %d%% of 100%% (%d/%d combinations)",
+        thr_col, idx, total_iterations))
+    }
+  }
 
-  results <- do.call(rbind, grid_metrics)
-  results[order(-results$filled_cells, -results$n_rows_after, -results$n_cols_after, results$missing_pct_after), , drop = FALSE]
+  results <- do.call(rbind, metrics_list)
+
+  dominated <- rep(FALSE, nrow(results))
+  for (i in seq_len(nrow(results))) {
+    candidate <- results[i, ]
+    better_or_equal <- (results$n_rows_after >= candidate$n_rows_after) &
+      (results$n_cols_after >= candidate$n_cols_after) &
+      (results$missing_pct_after <= candidate$missing_pct_after)
+    strictly_better <- (results$n_rows_after > candidate$n_rows_after) |
+      (results$n_cols_after > candidate$n_cols_after) |
+      (results$missing_pct_after < candidate$missing_pct_after)
+    dominated[i] <- any(better_or_equal & strictly_better)
+  }
+  results$pareto <- !dominated
+  results[order(-results$pareto, -results$tradeoff_score, results$missing_pct_after, -results$filled_cells), , drop = FALSE]
 }
 
 run_methylimp2 <- function(data_with_na) {
@@ -982,22 +1015,46 @@ server <- function(input, output, session) {
     )
   })
 
-  threshold_scan_results <- eventReactive(input$ml_run_threshold_scan, {
+  threshold_scan_results <- reactiveVal(NULL)
+  threshold_scan_status <- reactiveVal("Status: idle (click the button to run exhaustive scan).")
+
+  output$ml_threshold_scan_status <- renderText({
+    threshold_scan_status()
+  })
+
+  observeEvent(input$ml_run_threshold_scan, {
     preview <- missing_preview_data()
-    results <- compute_exhaustive_threshold_scan(
-      predictors = preview$predictors,
-      missing_definition = preview$missing_definition
-    )
-    results
+    threshold_scan_status("Status: starting exhaustive scan (0-100% x 0-100%)...")
+    started_at <- Sys.time()
+    withProgress(message = "Running exhaustive threshold scan", value = 0, {
+      results <- compute_exhaustive_threshold_scan(
+        predictors = preview$predictors,
+        missing_definition = preview$missing_definition,
+        progress_callback = function(progress_value) {
+          setProgress(value = progress_value)
+        },
+        status_callback = function(msg) {
+          elapsed <- as.numeric(difftime(Sys.time(), started_at, units = "secs"))
+          threshold_scan_status(sprintf("Status: %s | elapsed: %.1fs", msg, elapsed))
+        }
+      )
+      threshold_scan_results(results)
+    })
+    elapsed_total <- as.numeric(difftime(Sys.time(), started_at, units = "secs"))
+    threshold_scan_status(sprintf(
+      "Status: completed. Tested %s combinations in %.1fs.",
+      nrow(threshold_scan_results()), elapsed_total
+    ))
   })
 
   output$ml_threshold_scan_summary <- renderUI({
     results <- threshold_scan_results()
     req(nrow(results) > 0)
     best <- results[1, , drop = FALSE]
+    pareto_count <- sum(results$pareto)
     tags$div(
       style = "margin: 8px 0 12px 0; padding: 10px; background: #f6fbf6; border: 1px solid #cfe9cf;",
-      tags$b("Best thresholds found (exhaustive scan 0-100%): "),
+      tags$b("Best hotspot found (maximize information, minimize missingness): "),
       sprintf("columns = %s%%, rows = %s%%", best$thr_col, best$thr_row),
       tags$br(),
       sprintf(
@@ -1011,8 +1068,8 @@ server <- function(input, output, session) {
       ),
       tags$br(),
       sprintf(
-        "Top result among %s tested threshold pairs.",
-        nrow(results)
+        "Pareto hotspots found: %s | Tested threshold pairs: %s.",
+        pareto_count, nrow(results)
       )
     )
   })
@@ -1022,7 +1079,8 @@ server <- function(input, output, session) {
     req(nrow(results) > 0)
     top_results <- head(results[, c(
       "thr_col", "thr_row", "n_cols_after", "n_rows_after",
-      "filled_cells", "missing_cells_after", "total_cells_after", "missing_pct_after"
+      "missing_pct_after", "filled_cells", "rows_retained", "cols_retained",
+      "tradeoff_score", "pareto"
     ), drop = FALSE], 100)
     DT::datatable(
       top_results,
@@ -1030,7 +1088,7 @@ server <- function(input, output, session) {
       options = list(pageLength = 10, scrollX = TRUE),
       caption = htmltools::tags$caption(
         style = "caption-side: top; text-align: left;",
-        "Top 100 combinations ranked by filled cells (descending)."
+        "Top 100 combinations ranked by Pareto flag + tradeoff score (high rows/cols and low missingness)."
       )
     )
   })
