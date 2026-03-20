@@ -1383,7 +1383,12 @@ server <- function(input, output, session) {
                 print(paste("Couldn't run model", model_name, ":", conditionMessage(e)))
               })
             }
-            print(paste("Memory used:", pryr::mem_used() / 1024 / 1024))
+            memory_used_mb <- if (requireNamespace("pryr", quietly = TRUE)) {
+              as.numeric(pryr::mem_used()) / 1024 / 1024
+            } else {
+              sum(gc()[, 2])
+            }
+            print(paste("Memory used (MB):", round(memory_used_mb, 2)))
             gc()
           }
         }
