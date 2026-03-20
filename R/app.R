@@ -365,7 +365,7 @@ ui <- fluidPage(
                     class = "ml-threshold-input",
                     numericInput(
                       "ml_missing_threshold_cols",
-                      "Column removal threshold (% missing)",
+                      "Remove columns when missingness is above (%)",
                       min = 0, max = 100, value = 100, step = 1
                     )
                   )
@@ -375,14 +375,14 @@ ui <- fluidPage(
                     class = "ml-threshold-input",
                     numericInput(
                       "ml_missing_threshold_rows",
-                      "Sample removal threshold (% missing)",
+                      "Remove samples when missingness is above (%)",
                       min = 0, max = 100, value = 100, step = 1
                     )
                   )
                 )
-              )
+              ),
+              htmlOutput("ml_missing_summary")
             ),
-            htmlOutput("ml_missing_summary"),
             verbatimTextOutput("console_output"),
             column(
               width = 6,
@@ -889,7 +889,7 @@ server <- function(input, output, session) {
           )
         ),
         tags$tbody(
-          make_summary_row("Number of features", ncol(predictors), columns_after),
+          make_summary_row("Number of columns", ncol(predictors), columns_after),
           make_summary_row("Number of samples", nrow(predictors), samples_after),
           make_summary_row("Missing cells", missing_count, est_missing_after),
           make_summary_row("Missingness (%)", paste0(missing_pct, "%"),
