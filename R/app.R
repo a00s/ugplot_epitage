@@ -348,7 +348,9 @@ ui <- fluidPage(
                     "Remove samples" = "remove_rows",
                     "Replace with zero" = "replace_zero",
                     "KNN imputation" = "knn",
-                    "Mean imputation" = "mean"
+                    "Mean imputation" = "mean",
+                    "missForest imputation" = "missforest",
+                    "methyLImp2 imputation" = "methylimp2"
                   ),
                   selected = "none"
                 )
@@ -494,6 +496,19 @@ build_missing_mask <- function(df, missing_definition = c("empty", "na")) {
   mask
 }
 
+run_methylimp2 <- function(data_with_na) {
+  if (!requireNamespace("methyLImp2", quietly = TRUE)) {
+    stop("The 'methyLImp2' package is not installed. Install it with BiocManager::install('methyLImp2').")
+  }
+  methyl_matrix <- as.matrix(data_with_na)
+  suppressWarnings(storage.mode(methyl_matrix) <- "numeric")
+  if (any(!is.finite(methyl_matrix) & !is.na(methyl_matrix))) {
+    stop("Invalid non-finite values detected while preparing data for methyLImp2.")
+  }
+  imputed_matrix <- methyLImp2::methyLImp2(methyl_matrix)
+  as.data.frame(imputed_matrix, stringsAsFactors = FALSE)
+}
+
 apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, missing_definition,
                                    threshold_cols = 50, threshold_rows = 50) {
   train_set <- as.data.frame(trainSet)
@@ -551,6 +566,39 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
       knn_test_imputed <- predict(pp, knn_test)
       predictors_train[, num_cols] <- knn_train_imputed[, num_cols, drop = FALSE]
       predictors_test[, num_cols] <- knn_test_imputed[, num_cols, drop = FALSE]
+    }
+  }
+
+  if (strategy == "missforest") {
+    if (!requireNamespace("missForest", quietly = TRUE)) {
+      stop("The 'missForest' package is not installed. Install it with install.packages('missForest').")
+    }
+    train_for_impute <- predictors_train
+    test_for_impute <- predictors_test
+    train_for_impute[train_missing] <- NA
+    test_for_impute[test_missing] <- NA
+
+    predictors_train <- missForest::missForest(train_for_impute, verbose = FALSE)$ximp
+    predictors_train <- as.data.frame(predictors_train, stringsAsFactors = FALSE)
+    if (nrow(test_for_impute) > 0) {
+      predictors_test <- missForest::missForest(test_for_impute, verbose = FALSE)$ximp
+      predictors_test <- as.data.frame(predictors_test, stringsAsFactors = FALSE)
+    } else {
+      predictors_test <- predictors_test[0, , drop = FALSE]
+    }
+  }
+
+  if (strategy == "methylimp2") {
+    train_for_impute <- predictors_train
+    test_for_impute <- predictors_test
+    train_for_impute[train_missing] <- NA
+    test_for_impute[test_missing] <- NA
+
+    predictors_train <- run_methylimp2(train_for_impute)
+    if (nrow(test_for_impute) > 0) {
+      predictors_test <- run_methylimp2(test_for_impute)
+    } else {
+      predictors_test <- predictors_test[0, , drop = FALSE]
     }
   }
 
@@ -798,7 +846,7 @@ server <- function(input, output, session) {
         est_missing_after <- 0
       }
     }
-    if (strategy %in% c("replace_zero", "mean", "knn")) {
+    if (strategy %in% c("replace_zero", "mean", "knn", "missforest", "methylimp2")) {
       est_missing_after <- 0
     }
 
@@ -1148,6 +1196,17 @@ server <- function(input, output, session) {
           print("Library already installed.")
         }
       }
+    }
+    if (identical(input$ml_missing_strategy, "missforest") &&
+      !("missForest" %in% rownames(installed.packages()))) {
+      install.packages("missForest", dependencies = TRUE)
+    }
+    if (identical(input$ml_missing_strategy, "methylimp2") &&
+      !("methyLImp2" %in% rownames(installed.packages()))) {
+      if (!("BiocManager" %in% rownames(installed.packages()))) {
+        install.packages("BiocManager", dependencies = TRUE)
+      }
+      BiocManager::install("methyLImp2", ask = FALSE, update = FALSE)
     }
   })
 
