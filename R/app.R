@@ -400,7 +400,12 @@ ui <- fluidPage(
               div(class = "scrollable-table", div(id = "dynamic_machine_learning")),
               actionButton("uncheck_all_ml", "Uncheck all"),
               actionButton("check_all_ml", "Check all"),
-              actionButton("play_search_best_model_caret", "RUN"),
+              div(
+                class = "ml-run-actions",
+                actionButton("play_search_best_model_caret", "RUN"),
+                actionButton("ml_stop_training", "Stop", class = "btn-warning")
+              ),
+              tags$div(class = "ml-run-status", textOutput("ml_run_status")),
               uiOutput("downloadModelUI"),
               tags$br(),
               tags$p(slow_models_text, style = "color: gray; font-size: 11px;")
@@ -593,6 +598,7 @@ compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
     scan_order <- match.arg(scan_order)
     metrics_list <- list()
     idx <- 0
+
 
     if (scan_order == "cols_first") {
       col_missing_pct <- if (ncol(full_mask) > 0) colMeans(full_mask) * 100 else numeric(0)
@@ -1673,18 +1679,58 @@ server <- function(input, output, session) {
     input$keepAlive
   })
 
+  ml_run_cancel_requested <- reactiveVal(FALSE)
+  ml_run_is_running <- reactiveVal(FALSE)
+  ml_run_status <- reactiveVal("Status: idle.")
+
+  output$ml_run_status <- renderText({
+    ml_run_status()
+  })
+
+  observeEvent(input$ml_stop_training, {
+    if (isTRUE(ml_run_is_running())) {
+      ml_run_cancel_requested(TRUE)
+      ml_run_status("Status: stop requested... finalizing current model.")
+    } else {
+      ml_run_status("Status: no run in progress.")
+    }
+  })
+
   observeEvent(input$play_search_best_model_caret, {
+    ml_run_cancel_requested(FALSE)
+    ml_run_is_running(TRUE)
+    ml_run_status("Status: running machine learning models...")
+
     cl <- makeCluster(detectCores())
+    on.exit({
+      ml_run_is_running(FALSE)
+      stopCluster(cl)
+    }, add = TRUE)
     registerDoParallel(cl)
+
+    check_ml_cancel <- function() {
+      if (exists("serviceApp", envir = asNamespace("shiny"), inherits = FALSE)) {
+        shiny:::serviceApp()
+      }
+      if (exists("flushReact", envir = asNamespace("shiny"), inherits = FALSE)) {
+        shiny:::flushReact()
+      }
+      later::run_now(timeoutSecs = 0.05)
+      if (isTRUE(ml_run_cancel_requested())) {
+        stop("ML run cancelled by user.", call. = FALSE)
+      }
+    }
 
     temp_models_list <- list()
     ml_prediction <<- list()
     ml_error_message_text("")
 
     tryCatch({
-      withProgress(message = 'Searching the best model...', {
-        best_result <- 0.00
-        best_model <- ""
+      progress_ml <- shiny::Progress$new(session, min = 0, max = 1)
+      on.exit(progress_ml$close(), add = TRUE)
+      progress_ml$set(message = 'Searching the best model...', value = 0)
+      best_result <- 0.00
+      best_model <- ""
         target_name <- input$ml_target
         X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
         Y <- X[[target_name]]
@@ -1717,6 +1763,8 @@ server <- function(input, output, session) {
           do_dataset_seed <- 1
         }
         for (loop_dataset_seed in loop_dataset_seedi:loop_dataset_seedf) {
+          check_ml_cancel()
+          ml_run_status(sprintf("Status: running... dataset seed %s", loop_dataset_seed))
           if (do_dataset_seed == 1) {
             set.seed(loop_dataset_seed)
             print(paste("SEED: ", loop_dataset_seed))
@@ -1759,7 +1807,9 @@ server <- function(input, output, session) {
             do_seed <- 1
           }
           for (model_name in all_models) {
+            check_ml_cancel()
             count_model <- count_model + 1
+            ml_run_status(sprintf("Status: running model %s (%d/%d)", model_name, count_model, length(all_models)))
             tryCatch({
               model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
               model_libraries <- model_info$library
@@ -1774,18 +1824,27 @@ server <- function(input, output, session) {
             model_types <- model_info$type
             print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
             for (loop_seed in loop_seedi:loop_seedf) {
+              check_ml_cancel()
               if (do_seed == 1) {
                 set.seed(loop_seed)
               }
               tryCatch({
-                incProgress((1 * count_model / (length(input$ml_checkbox_group) + 1)),
+                total_dataset <- max(1, (loop_dataset_seedf - loop_dataset_seedi + 1))
+                total_seed <- max(1, (loop_seedf - loop_seedi + 1))
+                total_model <- max(1, length(input$ml_checkbox_group))
+                total_steps <- total_dataset * total_seed * total_model
+                current_step <- ((loop_dataset_seed - loop_dataset_seedi) * total_seed * total_model) +
+                  ((count_model - 1) * total_seed) +
+                  (loop_seed - loop_seedi + 1)
+                progress_ml$set(
+                  value = min(1, current_step / total_steps),
                   detail = paste(
                     'Fitting model',
                     paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")"),
-                    ". ", count_model, " of ",
-                    length(input$ml_checkbox_group),
-                    " (Best model: ", best_model,
-                    " Result: ", best_result, ")"))
+                    "| Best:", best_model,
+                    "| Result:", best_result
+                  )
+                )
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
                 result <- tryCatch({
@@ -1875,6 +1934,9 @@ server <- function(input, output, session) {
                   print(current_results)
                 }
               }, error = function(e) {
+                if (grepl("cancelled", conditionMessage(e), ignore.case = TRUE)) {
+                  stop(e)
+                }
                 ml_error_message_text(paste(ml_error_message_text(), " ", "Couldn't run model", model_name, ":", conditionMessage(e)))
                 print(paste("Couldn't run model", model_name, ":", conditionMessage(e)))
               })
@@ -1888,12 +1950,39 @@ server <- function(input, output, session) {
             gc()
           }
         }
-      })
     }, error = function(e) {
+      if (grepl("cancelled", conditionMessage(e), ignore.case = TRUE)) {
+        ml_run_status("Status: stopped by user.")
+        return(invisible(NULL))
+      }
+      ml_run_status(sprintf("Status: error: %s", conditionMessage(e)))
       print(e)
     })
+
     all_models_reactive(temp_models_list)
-    stopCluster(cl)
+    results <- ml_table_results()
+    if (nrow(results) == 0) {
+      if (!isTRUE(ml_run_cancel_requested())) {
+        ml_run_status("Status: completed with no valid results.")
+      }
+      return(invisible(NULL))
+    }
+
+    if (!isTRUE(ml_run_cancel_requested())) {
+      if ("Accuracy" %in% names(results)) {
+        min_val <- min(as.numeric(results$Accuracy), na.rm = TRUE)
+        max_val <- max(as.numeric(results$Accuracy), na.rm = TRUE)
+        ml_run_status(sprintf("Status: completed. Min/Max Accuracy %.4f to %.4f", min_val, max_val))
+      } else if (all(c("R2", "MAE") %in% names(results))) {
+        min_r2 <- min(as.numeric(results$R2), na.rm = TRUE)
+        max_r2 <- max(as.numeric(results$R2), na.rm = TRUE)
+        min_mae <- min(as.numeric(results$MAE), na.rm = TRUE)
+        max_mae <- max(as.numeric(results$MAE), na.rm = TRUE)
+        ml_run_status(sprintf("Status: completed. Min/Max R2 %.4f to %.4f | MAE %.4f to %.4f", min_r2, max_r2, min_mae, max_mae))
+      } else {
+        ml_run_status("Status: completed. Min/Max unavailable for current metrics.")
+      }
+    }
   })
 
   # Tab 6) MODEL ANALYSIS: Carrega o modelo e detecta variável‑alvo
