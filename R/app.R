@@ -400,7 +400,13 @@ ui <- fluidPage(
               div(class = "scrollable-table", div(id = "dynamic_machine_learning")),
               actionButton("uncheck_all_ml", "Uncheck all"),
               actionButton("check_all_ml", "Check all"),
-              actionButton("play_search_best_model_caret", "RUN"),
+              div(
+                class = "ml-run-actions",
+                actionButton("play_search_best_model_caret", "RUN"),
+                actionButton("ml_stop_training", "Stop", class = "btn-warning")
+              ),
+              tags$div(class = "ml-run-status", textOutput("ml_run_status")),
+              tags$div(class = "ml-run-minmax", textOutput("ml_run_minmax")),
               uiOutput("downloadModelUI"),
               tags$br(),
               tags$p(slow_models_text, style = "color: gray; font-size: 11px;")
@@ -593,6 +599,7 @@ compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
     scan_order <- match.arg(scan_order)
     metrics_list <- list()
     idx <- 0
+
 
     if (scan_order == "cols_first") {
       col_missing_pct <- if (ncol(full_mask) > 0) colMeans(full_mask) * 100 else numeric(0)
@@ -1673,9 +1680,47 @@ server <- function(input, output, session) {
     input$keepAlive
   })
 
+  ml_run_cancel_requested <- reactiveVal(FALSE)
+  ml_run_is_running <- reactiveVal(FALSE)
+  ml_run_status <- reactiveVal("Status: idle.")
+  ml_run_minmax <- reactiveVal("Min/Max found: n/a")
+
+  output$ml_run_status <- renderText({
+    ml_run_status()
+  })
+
+  output$ml_run_minmax <- renderText({
+    ml_run_minmax()
+  })
+
+  observeEvent(input$ml_stop_training, {
+    if (isTRUE(ml_run_is_running())) {
+      ml_run_cancel_requested(TRUE)
+      ml_run_status("Status: stop requested... finalizing current model.")
+    } else {
+      ml_run_status("Status: no run in progress.")
+    }
+  })
+
   observeEvent(input$play_search_best_model_caret, {
+    ml_run_cancel_requested(FALSE)
+    ml_run_is_running(TRUE)
+    ml_run_status("Status: running machine learning models...")
+    ml_run_minmax("Min/Max found: collecting values...")
+
     cl <- makeCluster(detectCores())
+    on.exit({
+      ml_run_is_running(FALSE)
+      stopCluster(cl)
+    }, add = TRUE)
     registerDoParallel(cl)
+
+    check_ml_cancel <- function() {
+      later::run_now(timeoutSecs = 0)
+      if (isTRUE(ml_run_cancel_requested())) {
+        stop("ML run cancelled by user.", call. = FALSE)
+      }
+    }
 
     temp_models_list <- list()
     ml_prediction <<- list()
@@ -1717,6 +1762,8 @@ server <- function(input, output, session) {
           do_dataset_seed <- 1
         }
         for (loop_dataset_seed in loop_dataset_seedi:loop_dataset_seedf) {
+          check_ml_cancel()
+          ml_run_status(sprintf("Status: running... dataset seed %s", loop_dataset_seed))
           if (do_dataset_seed == 1) {
             set.seed(loop_dataset_seed)
             print(paste("SEED: ", loop_dataset_seed))
@@ -1759,7 +1806,9 @@ server <- function(input, output, session) {
             do_seed <- 1
           }
           for (model_name in all_models) {
+            check_ml_cancel()
             count_model <- count_model + 1
+            ml_run_status(sprintf("Status: running model %s (%d/%d)", model_name, count_model, length(all_models)))
             tryCatch({
               model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
               model_libraries <- model_info$library
@@ -1774,6 +1823,7 @@ server <- function(input, output, session) {
             model_types <- model_info$type
             print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
             for (loop_seed in loop_seedi:loop_seedf) {
+              check_ml_cancel()
               if (do_seed == 1) {
                 set.seed(loop_seed)
               }
@@ -1875,6 +1925,9 @@ server <- function(input, output, session) {
                   print(current_results)
                 }
               }, error = function(e) {
+                if (grepl("cancelled", conditionMessage(e), ignore.case = TRUE)) {
+                  stop(e)
+                }
                 ml_error_message_text(paste(ml_error_message_text(), " ", "Couldn't run model", model_name, ":", conditionMessage(e)))
                 print(paste("Couldn't run model", model_name, ":", conditionMessage(e)))
               })
@@ -1890,10 +1943,41 @@ server <- function(input, output, session) {
         }
       })
     }, error = function(e) {
+      if (grepl("cancelled", conditionMessage(e), ignore.case = TRUE)) {
+        ml_run_status("Status: stopped by user.")
+        return(invisible(NULL))
+      }
+      ml_run_status(sprintf("Status: error: %s", conditionMessage(e)))
       print(e)
     })
+
     all_models_reactive(temp_models_list)
-    stopCluster(cl)
+    results <- ml_table_results()
+    if (nrow(results) == 0) {
+      if (!isTRUE(ml_run_cancel_requested())) {
+        ml_run_status("Status: completed with no valid results.")
+      }
+      ml_run_minmax("Min/Max found: n/a")
+      return(invisible(NULL))
+    }
+
+    if ("Accuracy" %in% names(results)) {
+      min_val <- min(as.numeric(results$Accuracy), na.rm = TRUE)
+      max_val <- max(as.numeric(results$Accuracy), na.rm = TRUE)
+      ml_run_minmax(sprintf("Min/Max found: Accuracy %.4f to %.4f", min_val, max_val))
+    } else if (all(c("R2", "MAE") %in% names(results))) {
+      min_r2 <- min(as.numeric(results$R2), na.rm = TRUE)
+      max_r2 <- max(as.numeric(results$R2), na.rm = TRUE)
+      min_mae <- min(as.numeric(results$MAE), na.rm = TRUE)
+      max_mae <- max(as.numeric(results$MAE), na.rm = TRUE)
+      ml_run_minmax(sprintf("Min/Max found: R2 %.4f to %.4f | MAE %.4f to %.4f", min_r2, max_r2, min_mae, max_mae))
+    } else {
+      ml_run_minmax("Min/Max found: unavailable for current metrics.")
+    }
+
+    if (!isTRUE(ml_run_cancel_requested())) {
+      ml_run_status("Status: completed.")
+    }
   })
 
   # Tab 6) MODEL ANALYSIS: Carrega o modelo e detecta variável‑alvo
