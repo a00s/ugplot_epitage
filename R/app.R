@@ -411,7 +411,6 @@ ui <- fluidPage(
                 actionButton("ml_stop_training", "Stop", class = "btn-warning")
               ),
               tags$div(class = "ml-run-status", textOutput("ml_run_status")),
-              tags$div(class = "ml-run-minmax", textOutput("ml_run_minmax")),
               uiOutput("downloadModelUI"),
               tags$br(),
               tags$p(slow_models_text, style = "color: gray; font-size: 11px;")
@@ -1746,14 +1745,9 @@ server <- function(input, output, session) {
   ml_run_cancel_requested <- reactiveVal(FALSE)
   ml_run_is_running <- reactiveVal(FALSE)
   ml_run_status <- reactiveVal("Status: idle.")
-  ml_run_minmax <- reactiveVal("Min/Max found: n/a")
 
   output$ml_run_status <- renderText({
     ml_run_status()
-  })
-
-  output$ml_run_minmax <- renderText({
-    ml_run_minmax()
   })
 
   observeEvent(input$ml_stop_training, {
@@ -1769,7 +1763,6 @@ server <- function(input, output, session) {
     ml_run_cancel_requested(FALSE)
     ml_run_is_running(TRUE)
     ml_run_status("Status: running machine learning models...")
-    ml_run_minmax("Min/Max found: collecting values...")
 
     cl <- makeCluster(detectCores())
     on.exit({
@@ -1779,7 +1772,7 @@ server <- function(input, output, session) {
     registerDoParallel(cl)
 
     check_ml_cancel <- function() {
-      later::run_now(timeoutSecs = 0)
+      later::run_now(timeoutSecs = 0.05)
       if (isTRUE(ml_run_cancel_requested())) {
         stop("ML run cancelled by user.", call. = FALSE)
       }
@@ -1790,9 +1783,11 @@ server <- function(input, output, session) {
     ml_error_message_text("")
 
     tryCatch({
-      withProgress(message = 'Searching the best model...', {
-        best_result <- 0.00
-        best_model <- ""
+      progress_ml <- shiny::Progress$new(session, min = 0, max = 1)
+      on.exit(progress_ml$close(), add = TRUE)
+      progress_ml$set(message = 'Searching the best model...', value = 0)
+      best_result <- 0.00
+      best_model <- ""
         target_name <- input$ml_target
         X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
         Y <- X[[target_name]]
@@ -1891,14 +1886,22 @@ server <- function(input, output, session) {
                 set.seed(loop_seed)
               }
               tryCatch({
-                incProgress((1 * count_model / (length(input$ml_checkbox_group) + 1)),
+                total_dataset <- max(1, (loop_dataset_seedf - loop_dataset_seedi + 1))
+                total_seed <- max(1, (loop_seedf - loop_seedi + 1))
+                total_model <- max(1, length(input$ml_checkbox_group))
+                total_steps <- total_dataset * total_seed * total_model
+                current_step <- ((loop_dataset_seed - loop_dataset_seedi) * total_seed * total_model) +
+                  ((count_model - 1) * total_seed) +
+                  (loop_seed - loop_seedi + 1)
+                progress_ml$set(
+                  value = min(1, current_step / total_steps),
                   detail = paste(
                     'Fitting model',
                     paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")"),
-                    ". ", count_model, " of ",
-                    length(input$ml_checkbox_group),
-                    " (Best model: ", best_model,
-                    " Result: ", best_result, ")"))
+                    "| Best:", best_model,
+                    "| Result:", best_result
+                  )
+                )
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
                 result <- tryCatch({
@@ -2004,7 +2007,6 @@ server <- function(input, output, session) {
             gc()
           }
         }
-      })
     }, error = function(e) {
       if (grepl("cancelled", conditionMessage(e), ignore.case = TRUE)) {
         ml_run_status("Status: stopped by user.")
@@ -2020,26 +2022,23 @@ server <- function(input, output, session) {
       if (!isTRUE(ml_run_cancel_requested())) {
         ml_run_status("Status: completed with no valid results.")
       }
-      ml_run_minmax("Min/Max found: n/a")
       return(invisible(NULL))
     }
 
-    if ("Accuracy" %in% names(results)) {
-      min_val <- min(as.numeric(results$Accuracy), na.rm = TRUE)
-      max_val <- max(as.numeric(results$Accuracy), na.rm = TRUE)
-      ml_run_minmax(sprintf("Min/Max found: Accuracy %.4f to %.4f", min_val, max_val))
-    } else if (all(c("R2", "MAE") %in% names(results))) {
-      min_r2 <- min(as.numeric(results$R2), na.rm = TRUE)
-      max_r2 <- max(as.numeric(results$R2), na.rm = TRUE)
-      min_mae <- min(as.numeric(results$MAE), na.rm = TRUE)
-      max_mae <- max(as.numeric(results$MAE), na.rm = TRUE)
-      ml_run_minmax(sprintf("Min/Max found: R2 %.4f to %.4f | MAE %.4f to %.4f", min_r2, max_r2, min_mae, max_mae))
-    } else {
-      ml_run_minmax("Min/Max found: unavailable for current metrics.")
-    }
-
     if (!isTRUE(ml_run_cancel_requested())) {
-      ml_run_status("Status: completed.")
+      if ("Accuracy" %in% names(results)) {
+        min_val <- min(as.numeric(results$Accuracy), na.rm = TRUE)
+        max_val <- max(as.numeric(results$Accuracy), na.rm = TRUE)
+        ml_run_status(sprintf("Status: completed. Min/Max Accuracy %.4f to %.4f", min_val, max_val))
+      } else if (all(c("R2", "MAE") %in% names(results))) {
+        min_r2 <- min(as.numeric(results$R2), na.rm = TRUE)
+        max_r2 <- max(as.numeric(results$R2), na.rm = TRUE)
+        min_mae <- min(as.numeric(results$MAE), na.rm = TRUE)
+        max_mae <- max(as.numeric(results$MAE), na.rm = TRUE)
+        ml_run_status(sprintf("Status: completed. Min/Max R2 %.4f to %.4f | MAE %.4f to %.4f", min_r2, max_r2, min_mae, max_mae))
+      } else {
+        ml_run_status("Status: completed. Min/Max unavailable for current metrics.")
+      }
     }
   })
 
