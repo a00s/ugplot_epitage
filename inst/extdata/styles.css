@@ -206,17 +206,18 @@ button.ml-section-toggle:focus,
 }
 
 
-.ml-threshold-actions {
+
+.ml-run-actions {
   display: flex;
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
 }
 
-.ml-threshold-status {
+.ml-run-status {
   margin-top: 8px;
 }
 
-.ml-threshold-minmax {
+.ml-run-minmax {
   margin-top: 4px;
 }
