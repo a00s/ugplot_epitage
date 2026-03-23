@@ -1800,10 +1800,10 @@ server <- function(input, output, session) {
                     "Dataset/Train seed: ", loop_dataset_seed, "/", loop_seed, "\n",
                     "Model progress: ", count_model, "/", length(input$ml_checkbox_group),
                     " | Seed progress: ", seed_position, "/", total_seed_runs, "\n",
-                    "Best ", metric_label, ": ", if (is.finite(best_result)) round(best_result, 4) else "N/A",
-                    " (", best_model, ")\n",
                     "Worst ", metric_label, ": ", if (is.finite(worst_result)) round(worst_result, 4) else "N/A",
-                    " (", worst_model, ")"
+                    " (", worst_model, ")\n",
+                    "Best ", metric_label, ": ", if (is.finite(best_result)) round(best_result, 4) else "N/A",
+                    " (", best_model, ")"
                   ))
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
