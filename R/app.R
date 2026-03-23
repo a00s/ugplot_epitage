@@ -132,6 +132,13 @@ getImage <- function(fileName) {
 
 # Define the UI of the application
 ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      .shiny-notification .progress-text {
+        white-space: pre-line !important;
+      }
+    "))
+  ),
   tags$script("
     $(document).on('shiny:sessioninitialized', function(event) {
       setInterval(function() {
