@@ -1683,8 +1683,10 @@ server <- function(input, output, session) {
 
     tryCatch({
       withProgress(message = 'Searching the best model...', {
-        best_result <- 0.00
-        best_model <- ""
+        best_result <- -Inf
+        best_model <- "-"
+        worst_result <- Inf
+        worst_model <- "-"
         target_name <- input$ml_target
         X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
         Y <- X[[target_name]]
@@ -1713,6 +1715,7 @@ server <- function(input, output, session) {
         do_dataset_seed <- 0
         loop_dataset_seedi <- as.numeric(input$ml_dataset_seedi)
         loop_dataset_seedf <- as.numeric(input$ml_dataset_seedf)
+        metric_label <- if (is.factor(Y)) "Accuracy" else "R2"
         if (!is.na(loop_dataset_seedi) && !is.na(loop_dataset_seedf)) {
           do_dataset_seed <- 1
         }
@@ -1755,6 +1758,11 @@ server <- function(input, output, session) {
           do_seed <- 0
           loop_seedi <- as.numeric(input$ml_seedi)
           loop_seedf <- as.numeric(input$ml_seedf)
+          total_seed_runs <- if (!is.na(loop_seedi) && !is.na(loop_seedf)) {
+            max(1, (loop_seedf - loop_seedi + 1))
+          } else {
+            1
+          }
           if (!is.na(loop_seedi) && !is.na(loop_seedf)) {
             do_seed <- 1
           }
@@ -1778,14 +1786,18 @@ server <- function(input, output, session) {
                 set.seed(loop_seed)
               }
               tryCatch({
+                seed_position <- if (do_seed == 1) (loop_seed - loop_seedi + 1) else 1
                 incProgress((1 * count_model / (length(input$ml_checkbox_group) + 1)),
-                  detail = paste(
-                    'Fitting model',
-                    paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")"),
-                    ". ", count_model, " of ",
-                    length(input$ml_checkbox_group),
-                    " (Best model: ", best_model,
-                    " Result: ", best_result, ")"))
+                  detail = paste0(
+                    "Current model: ", model_name, "\n",
+                    "Dataset/Train seed: ", loop_dataset_seed, "/", loop_seed, "\n",
+                    "Model progress: ", count_model, "/", length(input$ml_checkbox_group),
+                    " | Seed progress: ", seed_position, "/", total_seed_runs, "\n",
+                    "Best ", metric_label, ": ", if (is.finite(best_result)) round(best_result, 4) else "N/A",
+                    " (", best_model, ")\n",
+                    "Worst ", metric_label, ": ", if (is.finite(worst_result)) round(worst_result, 4) else "N/A",
+                    " (", worst_model, ")"
+                  ))
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
                 result <- tryCatch({
@@ -1832,6 +1844,10 @@ server <- function(input, output, session) {
                     best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
                     best_model_object(model)
                   }
+                  if (accuracy < worst_result) {
+                    worst_result <- accuracy
+                    worst_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
+                  }
                   model_results <- data.frame(Model = model_name,
                     "Accuracy" = accuracy,
                     "Dataset seed" = loop_dataset_seed,
@@ -1849,6 +1865,10 @@ server <- function(input, output, session) {
                     best_result <- rsq_value
                     best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
                     best_model_object(model)
+                  }
+                  if (rsq_value < worst_result) {
+                    worst_result <- rsq_value
+                    worst_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
                   }
                   model_results <- data.frame(Model = model_name,
                     "R2" = rsq_value,
