@@ -1683,8 +1683,10 @@ server <- function(input, output, session) {
 
     tryCatch({
       withProgress(message = 'Searching the best model...', {
-        best_result <- 0.00
-        best_model <- ""
+        best_result <- -Inf
+        best_model <- "-"
+        worst_result <- Inf
+        worst_model <- "-"
         target_name <- input$ml_target
         X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
         Y <- X[[target_name]]
@@ -1779,13 +1781,12 @@ server <- function(input, output, session) {
               }
               tryCatch({
                 incProgress((1 * count_model / (length(input$ml_checkbox_group) + 1)),
-                  detail = paste(
-                    'Fitting model',
-                    paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")"),
-                    ". ", count_model, " of ",
-                    length(input$ml_checkbox_group),
-                    " (Best model: ", best_model,
-                    " Result: ", best_result, ")"))
+                  detail = paste0(
+                    "Fitting model: ", model_name, " (", loop_dataset_seed, ":", loop_seed, ")\n",
+                    "Progress: ", count_model, " of ", length(input$ml_checkbox_group), "\n",
+                    "Best: ", best_model, " | Result: ", if (is.finite(best_result)) round(best_result, 4) else "N/A", "\n",
+                    "Worst: ", worst_model, " | Result: ", if (is.finite(worst_result)) round(worst_result, 4) else "N/A"
+                  ))
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
                 result <- tryCatch({
@@ -1832,6 +1833,10 @@ server <- function(input, output, session) {
                     best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
                     best_model_object(model)
                   }
+                  if (accuracy < worst_result) {
+                    worst_result <- accuracy
+                    worst_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
+                  }
                   model_results <- data.frame(Model = model_name,
                     "Accuracy" = accuracy,
                     "Dataset seed" = loop_dataset_seed,
@@ -1849,6 +1854,10 @@ server <- function(input, output, session) {
                     best_result <- rsq_value
                     best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
                     best_model_object(model)
+                  }
+                  if (rsq_value < worst_result) {
+                    worst_result <- rsq_value
+                    worst_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
                   }
                   model_results <- data.frame(Model = model_name,
                     "R2" = rsq_value,
