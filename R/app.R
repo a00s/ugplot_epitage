@@ -369,6 +369,25 @@ ui <- fluidPage(
                     ),
                     selected = "none"
                   ),
+                  selectInput(
+                    "ml_imputation_scope",
+                    "Imputation scope",
+                    choices = c(
+                      "Impute train and test separately" = "split_separate",
+                      "Impute all data once (preprocessing)" = "full_once"
+                    ),
+                    selected = "split_separate"
+                  ),
+                  selectInput(
+                    "ml_threshold_scope",
+                    "Threshold scope",
+                    choices = c(
+                      "Mode A: Train only" = "train_only",
+                      "Mode B: Full dataset before split" = "full_before_split",
+                      "Mode C: Train + test self rows" = "train_and_test_self_rows"
+                    ),
+                    selected = "train_only"
+                  ),
                   div(
                     class = "ml-threshold-input",
                     numericInput(
@@ -755,7 +774,8 @@ run_methylimp2 <- function(data_with_na) {
 }
 
 apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, missing_definition,
-                                   threshold_cols = 50, threshold_rows = 50) {
+                                   threshold_cols = 50, threshold_rows = 50,
+                                   threshold_scope = "train_only") {
   train_set <- as.data.frame(trainSet)
   test_set <- as.data.frame(testSet)
 
@@ -765,12 +785,21 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
   train_missing <- build_missing_mask(predictors_train, missing_definition)
   test_missing <- build_missing_mask(predictors_test, missing_definition)
 
-  filtered_train <- apply_missing_filters(
-    predictors = predictors_train,
-    missing_definition = missing_definition,
-    threshold_cols = threshold_cols,
-    threshold_rows = threshold_rows
-  )
+  if (identical(threshold_scope, "full_before_split")) {
+    filtered_train <- list(
+      filtered_predictors = predictors_train,
+      filtered_mask = train_missing,
+      keep_cols = colnames(predictors_train),
+      keep_rows = seq_len(nrow(predictors_train))
+    )
+  } else {
+    filtered_train <- apply_missing_filters(
+      predictors = predictors_train,
+      missing_definition = missing_definition,
+      threshold_cols = threshold_cols,
+      threshold_rows = threshold_rows
+    )
+  }
   predictors_train <- filtered_train$filtered_predictors
   train_missing <- filtered_train$filtered_mask
 
@@ -782,6 +811,14 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
   if (ncol(predictors_train) > 0) {
     keep_rows <- filtered_train$keep_rows
     train_set <- train_set[keep_rows, , drop = FALSE]
+  }
+
+  if (identical(threshold_scope, "train_and_test_self_rows") && ncol(predictors_test) > 0) {
+    test_row_missing_pct <- rowMeans(test_missing) * 100
+    keep_test_rows <- which(test_row_missing_pct <= threshold_rows)
+    predictors_test <- predictors_test[keep_test_rows, , drop = FALSE]
+    test_set <- test_set[keep_test_rows, , drop = FALSE]
+    test_missing <- build_missing_mask(predictors_test, missing_definition)
   }
 
   if (strategy == "replace_zero") {
@@ -987,18 +1024,37 @@ server <- function(input, output, session) {
     },
     content = function(file) {
       preview <- missing_preview_data()
-      filtered <- apply_missing_filters(
-        predictors = preview$predictors,
-        missing_definition = preview$missing_definition,
-        threshold_cols = input$ml_missing_threshold_cols,
-        threshold_rows = input$ml_missing_threshold_rows
-      )
-      target_filtered <- preview$subset_table[, preview$target_name, drop = FALSE]
-      if (ncol(filtered$filtered_predictors) > 0) {
-        target_filtered <- target_filtered[filtered$keep_rows, , drop = FALSE]
+      if (identical(input$ml_threshold_scope, "full_before_split")) {
+        filtered <- apply_missing_filters(
+          predictors = preview$predictors,
+          missing_definition = preview$missing_definition,
+          threshold_cols = input$ml_missing_threshold_cols,
+          threshold_rows = input$ml_missing_threshold_rows
+        )
+        target_filtered <- preview$subset_table[, preview$target_name, drop = FALSE]
+        if (ncol(filtered$filtered_predictors) > 0) {
+          target_filtered <- target_filtered[filtered$keep_rows, , drop = FALSE]
+        }
+        full_filtered <- cbind(target_filtered, filtered$filtered_predictors)
+        names(full_filtered)[1] <- preview$target_name
+        if (identical(input$ml_imputation_scope, "full_once")) {
+          imputed_full <- apply_missing_strategy(
+            trainSet = full_filtered,
+            testSet = full_filtered[0, , drop = FALSE],
+            target_name = preview$target_name,
+            strategy = input$ml_missing_strategy,
+            missing_definition = preview$missing_definition,
+            threshold_cols = input$ml_missing_threshold_cols,
+            threshold_rows = input$ml_missing_threshold_rows,
+            threshold_scope = "full_before_split"
+          )
+          dataset_to_download <- imputed_full$train_set
+        } else {
+          dataset_to_download <- full_filtered
+        }
+      } else {
+        dataset_to_download <- preview$subset_table
       }
-      dataset_to_download <- cbind(target_filtered, filtered$filtered_predictors)
-      names(dataset_to_download)[1] <- preview$target_name
       utils::write.csv(dataset_to_download, file, row.names = TRUE)
     }
   )
@@ -1111,16 +1167,23 @@ server <- function(input, output, session) {
     col_threshold <- input$ml_missing_threshold_cols
     row_threshold <- input$ml_missing_threshold_rows
     strategy <- input$ml_missing_strategy
-    filtered <- apply_missing_filters(
-      predictors = predictors,
-      missing_definition = preview$missing_definition,
-      threshold_cols = col_threshold,
-      threshold_rows = row_threshold
-    )
-    filtered_mask <- filtered$filtered_mask
-    columns_after <- ncol(filtered_mask)
-    samples_after <- nrow(filtered_mask)
-    est_missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
+    threshold_scope <- input$ml_threshold_scope
+    if (identical(threshold_scope, "full_before_split")) {
+      filtered <- apply_missing_filters(
+        predictors = predictors,
+        missing_definition = preview$missing_definition,
+        threshold_cols = col_threshold,
+        threshold_rows = row_threshold
+      )
+      filtered_mask <- filtered$filtered_mask
+      columns_after <- ncol(filtered_mask)
+      samples_after <- nrow(filtered_mask)
+      est_missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
+    } else {
+      columns_after <- ncol(predictors)
+      samples_after <- nrow(predictors)
+      est_missing_after <- missing_count
+    }
     if (strategy %in% c("replace_zero", "mean", "knn", "missforest", "methylimp2")) {
       est_missing_after <- 0
     }
@@ -1159,6 +1222,16 @@ server <- function(input, output, session) {
             }
           )
         )
+      ),
+      tags$p(
+        style = "margin-top: 8px; font-size: 12px; color: #596273;",
+        if (identical(threshold_scope, "full_before_split")) {
+          "Preview applies thresholds to the entire dataset (Mode B)."
+        } else if (identical(threshold_scope, "train_and_test_self_rows")) {
+          "Preview shows current dataset; thresholds are applied in train and then to test rows using test missingness (Mode C)."
+        } else {
+          "Preview shows current dataset; thresholds are applied only on train split during training (Mode A)."
+        }
       )
     )
   })
@@ -1243,15 +1316,17 @@ server <- function(input, output, session) {
   target_distribution_data <- reactive({
     preview <- missing_preview_data()
     target_values <- preview$subset_table[, preview$target_name, drop = TRUE]
-    filtered <- apply_missing_filters(
-      predictors = preview$predictors,
-      missing_definition = preview$missing_definition,
-      threshold_cols = input$ml_missing_threshold_cols,
-      threshold_rows = input$ml_missing_threshold_rows
-    )
     target_filtered <- preview$subset_table[, preview$target_name, drop = FALSE]
-    if (ncol(filtered$filtered_predictors) > 0) {
-      target_filtered <- target_filtered[filtered$keep_rows, , drop = FALSE]
+    if (identical(input$ml_threshold_scope, "full_before_split")) {
+      filtered <- apply_missing_filters(
+        predictors = preview$predictors,
+        missing_definition = preview$missing_definition,
+        threshold_cols = input$ml_missing_threshold_cols,
+        threshold_rows = input$ml_missing_threshold_rows
+      )
+      if (ncol(filtered$filtered_predictors) > 0) {
+        target_filtered <- target_filtered[filtered$keep_rows, , drop = FALSE]
+      }
     }
     list(
       target_name = preview$target_name,
@@ -1718,6 +1793,8 @@ server <- function(input, output, session) {
             }
           }
         }
+        X_base <- X
+        Y_base <- Y
         ml_table_results(data.frame())
         do_dataset_seed <- 0
         loop_dataset_seedi <- as.numeric(input$ml_dataset_seedi)
@@ -1727,9 +1804,45 @@ server <- function(input, output, session) {
           do_dataset_seed <- 1
         }
         for (loop_dataset_seed in loop_dataset_seedi:loop_dataset_seedf) {
+          X <- X_base
+          Y <- Y_base
           if (do_dataset_seed == 1) {
             set.seed(loop_dataset_seed)
             print(paste("SEED: ", loop_dataset_seed))
+          }
+          threshold_scope <- input$ml_threshold_scope
+          imputation_scope <- input$ml_imputation_scope
+          missing_definition <- input$ml_missing_definition
+          if (is.null(missing_definition)) {
+            missing_definition <- c("empty", "na")
+          }
+          print(paste("Threshold scope:", threshold_scope, "| Missing strategy:", input$ml_missing_strategy, "| Imputation scope:", imputation_scope))
+          if (identical(threshold_scope, "full_before_split")) {
+            predictors_all <- X[, setdiff(colnames(X), target_name), drop = FALSE]
+            filtered_all <- apply_missing_filters(
+              predictors = predictors_all,
+              missing_definition = missing_definition,
+              threshold_cols = input$ml_missing_threshold_cols,
+              threshold_rows = input$ml_missing_threshold_rows
+            )
+            X <- cbind(X[filtered_all$keep_rows, target_name, drop = FALSE], filtered_all$filtered_predictors)
+            names(X)[1] <- target_name
+            Y <- X[[target_name]]
+          }
+          missing_strategy <- input$ml_missing_strategy
+          if (identical(imputation_scope, "full_once") && !identical(missing_strategy, "none")) {
+            preprocessed_full <- apply_missing_strategy(
+              trainSet = X,
+              testSet = X[0, , drop = FALSE],
+              target_name = target_name,
+              strategy = missing_strategy,
+              missing_definition = missing_definition,
+              threshold_cols = input$ml_missing_threshold_cols,
+              threshold_rows = input$ml_missing_threshold_rows,
+              threshold_scope = "full_before_split"
+            )
+            X <- preprocessed_full$train_set
+            Y <- X[[target_name]]
           }
           trainIndex <- createDataPartition(Y, p = .8, list = FALSE, times = 1)
           trainSet <- X[trainIndex, ]
@@ -1740,22 +1853,21 @@ server <- function(input, output, session) {
           if (!is.data.frame(testSet)) {
             testSet <- as.data.frame(testSet)
           }
-          missing_strategy <- input$ml_missing_strategy
-          missing_definition <- input$ml_missing_definition
-          if (is.null(missing_definition)) {
-            missing_definition <- c("empty", "na")
+          strategy_after_split <- if (identical(imputation_scope, "full_once")) "none" else missing_strategy
+          if (!identical(threshold_scope, "full_before_split")) {
+            processed_data <- apply_missing_strategy(
+              trainSet = trainSet,
+              testSet = testSet,
+              target_name = target_name,
+              strategy = strategy_after_split,
+              missing_definition = missing_definition,
+              threshold_cols = input$ml_missing_threshold_cols,
+              threshold_rows = input$ml_missing_threshold_rows,
+              threshold_scope = threshold_scope
+            )
+            trainSet <- processed_data$train_set
+            testSet <- processed_data$test_set
           }
-          processed_data <- apply_missing_strategy(
-            trainSet = trainSet,
-            testSet = testSet,
-            target_name = target_name,
-            strategy = missing_strategy,
-            missing_definition = missing_definition,
-            threshold_cols = input$ml_missing_threshold_cols,
-            threshold_rows = input$ml_missing_threshold_rows
-          )
-          trainSet <- processed_data$train_set
-          testSet <- processed_data$test_set
           if (nrow(trainSet) < 5 || ncol(trainSet) < 2) {
             ml_error_message_text(paste(ml_error_message_text(), " ", "Not enough data after missing strategy for seed", loop_dataset_seed, "/"))
             next
@@ -1798,6 +1910,7 @@ server <- function(input, output, session) {
                   detail = paste0(
                     "Current model: ", model_name, "\n",
                     "Dataset/Train seed: ", loop_dataset_seed, "/", loop_seed, "\n",
+                    "Threshold scope / Missing strategy / Imputation scope: ", threshold_scope, " / ", missing_strategy, " / ", imputation_scope, "\n",
                     "Model progress: ", count_model, "/", length(input$ml_checkbox_group),
                     " | Seed progress: ", seed_position, "/", total_seed_runs, "\n",
                     "Worst ", metric_label, ": ", if (is.finite(worst_result)) round(worst_result, 4) else "N/A",
@@ -1858,7 +1971,9 @@ server <- function(input, output, session) {
                   model_results <- data.frame(Model = model_name,
                     "Accuracy" = accuracy,
                     "Dataset seed" = loop_dataset_seed,
-                    "Training seed" = loop_seed)
+                    "Training seed" = loop_seed,
+                    "Threshold scope" = threshold_scope,
+                    "Imputation scope" = imputation_scope)
                   ml_table_results(rbind(ml_table_results(), model_results))
                   temp_models_list[[model_name]] <- model
                 } else {
@@ -1881,7 +1996,9 @@ server <- function(input, output, session) {
                     "R2" = rsq_value,
                     "MAE" = mae_value,
                     "Dataset seed" = loop_dataset_seed,
-                    "Training seed" = loop_seed)
+                    "Training seed" = loop_seed,
+                    "Threshold scope" = threshold_scope,
+                    "Imputation scope" = imputation_scope)
                   ml_table_results(rbind(ml_table_results(), model_results))
                   if (rsq_value >= 0.6) {
                     temp_models_list[[model_name]] <- model
