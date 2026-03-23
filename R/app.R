@@ -1839,19 +1839,24 @@ server <- function(input, output, session) {
                   ml_table_results(rbind(ml_table_results(), model_results))
                   temp_models_list[[model_name]] <- model
                 } else {
-                  result_pred <- postResample(pred, testSet[[target_name]])
-                  if (result_pred["Rsquared"] > best_result) {
-                    best_result <- result_pred["Rsquared"]
+                  result_pred <- postResample(pred, actual_values)
+                  rsq_value <- unname(result_pred["Rsquared"])
+                  mae_value <- unname(result_pred["MAE"])
+                  if (is.na(rsq_value) || is.na(mae_value)) {
+                    stop("regression metrics returned NA (check missing values after threshold filtering)")
+                  }
+                  if (rsq_value > best_result) {
+                    best_result <- rsq_value
                     best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
                     best_model_object(model)
                   }
                   model_results <- data.frame(Model = model_name,
-                    "R2" = result_pred["Rsquared"],
-                    "MAE" = result_pred["MAE"],
+                    "R2" = rsq_value,
+                    "MAE" = mae_value,
                     "Dataset seed" = loop_dataset_seed,
                     "Training seed" = loop_seed)
                   ml_table_results(rbind(ml_table_results(), model_results))
-                  if (result_pred["Rsquared"] >= 0.6) {
+                  if (rsq_value >= 0.6) {
                     temp_models_list[[model_name]] <- model
                   }
                 }
