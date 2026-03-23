@@ -378,8 +378,13 @@ ui <- fluidPage(
                       min = 0, max = 100, value = 100, step = 1
                     )
                   ),
-                  actionButton("ml_run_threshold_scan", "Run exhaustive threshold scan (0-100%)"),
-                  tags$div(style = "margin-top: 8px;", textOutput("ml_threshold_scan_status"))
+                  div(
+                    class = "ml-threshold-actions",
+                    actionButton("ml_run_threshold_scan", "Run exhaustive threshold scan (0-100%)"),
+                    actionButton("ml_stop_threshold_scan", "Stop", class = "btn-warning")
+                  ),
+                  tags$div(class = "ml-threshold-status", textOutput("ml_threshold_scan_status")),
+                  tags$div(class = "ml-threshold-minmax", textOutput("ml_threshold_scan_minmax"))
                 ),
                 htmlOutput("ml_missing_summary"),
                 htmlOutput("ml_threshold_scan_summary"),
@@ -584,7 +589,8 @@ apply_missing_filters <- function(predictors, missing_definition,
 }
 
 compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
-                                              progress_callback = NULL, status_callback = NULL) {
+                                              progress_callback = NULL, status_callback = NULL,
+                                              cancel_check = NULL) {
   original_rows <- nrow(predictors)
   original_cols <- ncol(predictors)
   full_mask <- build_missing_mask(predictors, missing_definition)
@@ -594,11 +600,21 @@ compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
     metrics_list <- list()
     idx <- 0
 
+    abort_if_cancelled <- function() {
+      if (!is.null(cancel_check)) {
+        later::run_now(timeoutSecs = 0)
+        if (isTRUE(cancel_check())) {
+          stop("Threshold scan cancelled by user.", call. = FALSE)
+        }
+      }
+    }
+
     if (scan_order == "cols_first") {
       col_missing_pct <- if (ncol(full_mask) > 0) colMeans(full_mask) * 100 else numeric(0)
       outer_thresholds <- sort(unique(pmin(100, pmax(0, ceiling(c(0, 100, col_missing_pct))))))
       if (length(outer_thresholds) == 0) outer_thresholds <- c(0, 100)
       for (thr_col in outer_thresholds) {
+        abort_if_cancelled()
         if (ncol(full_mask) > 0) {
           keep_cols <- names(col_missing_pct[col_missing_pct <= thr_col])
           filtered_mask_outer <- full_mask[, keep_cols, drop = FALSE]
@@ -613,6 +629,7 @@ compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
           inner_thresholds <- c(0, 100)
         }
         for (thr_row in inner_thresholds) {
+          abort_if_cancelled()
           idx <- idx + 1
           filtered <- apply_missing_filters_with_order(
             predictors = predictors,
@@ -652,6 +669,7 @@ compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
       outer_thresholds <- sort(unique(pmin(100, pmax(0, ceiling(c(0, 100, row_missing_pct))))))
       if (length(outer_thresholds) == 0) outer_thresholds <- c(0, 100)
       for (thr_row in outer_thresholds) {
+        abort_if_cancelled()
         if (ncol(full_mask) > 0) {
           keep_rows <- which(row_missing_pct <= thr_row)
           filtered_mask_outer <- full_mask[keep_rows, , drop = FALSE]
@@ -665,6 +683,7 @@ compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
           inner_thresholds <- c(0, 100)
         }
         for (thr_col in inner_thresholds) {
+          abort_if_cancelled()
           idx <- idx + 1
           filtered <- apply_missing_filters_with_order(
             predictors = predictors,
@@ -1158,9 +1177,25 @@ server <- function(input, output, session) {
 
   threshold_scan_results <- reactiveVal(NULL)
   threshold_scan_status <- reactiveVal("Status: idle (click the button to run exhaustive scan).")
+  threshold_scan_cancel_requested <- reactiveVal(FALSE)
+  threshold_scan_running <- reactiveVal(FALSE)
+  threshold_scan_minmax <- reactiveVal("Min/Max found: n/a")
 
   output$ml_threshold_scan_status <- renderText({
     threshold_scan_status()
+  })
+
+  output$ml_threshold_scan_minmax <- renderText({
+    threshold_scan_minmax()
+  })
+
+  observeEvent(input$ml_stop_threshold_scan, {
+    if (isTRUE(threshold_scan_running())) {
+      threshold_scan_cancel_requested(TRUE)
+      threshold_scan_status("Status: stop requested... finishing current step.")
+    } else {
+      threshold_scan_status("Status: no scan is running.")
+    }
   })
 
   observeEvent(input$ml_run_threshold_scan, {
@@ -1169,35 +1204,72 @@ server <- function(input, output, session) {
     preview_missing_count <- if (length(preview_missing_mask) > 0) sum(preview_missing_mask) else 0
     if (preview_missing_count == 0) {
       threshold_scan_results(NULL)
+      threshold_scan_minmax("Min/Max found: n/a (no missing values detected).")
       threshold_scan_status("Status: skipped. No missing values detected with current definition; exhaustive scan is unnecessary.")
       showNotification("No missing values detected for the selected data/definition. Threshold scan was skipped.", type = "message")
       return(invisible(NULL))
     }
+    threshold_scan_cancel_requested(FALSE)
+    threshold_scan_running(TRUE)
+    threshold_scan_minmax("Min/Max found: collecting values...")
     threshold_scan_status("Status: starting exhaustive scan (0-100% x 0-100%)...")
     started_at <- Sys.time()
     progress_bar <- shiny::Progress$new(session, min = 0, max = 1)
-    on.exit(progress_bar$close(), add = TRUE)
+    on.exit({
+      threshold_scan_running(FALSE)
+      progress_bar$close()
+    }, add = TRUE)
     progress_bar$set(message = "Running exhaustive threshold scan", value = 0)
-    results <- compute_exhaustive_threshold_scan(
-      predictors = preview$predictors,
-      missing_definition = preview$missing_definition,
-      progress_callback = function(progress_value) {
-        progress_bar$set(
-          value = progress_value,
-          detail = sprintf("%.0f%% completed", 100 * progress_value)
-        )
-      },
-      status_callback = function(msg) {
-        elapsed <- as.numeric(difftime(Sys.time(), started_at, units = "secs"))
-        threshold_scan_status(sprintf("Status: %s | elapsed: %.1fs", msg, elapsed))
+
+    results <- tryCatch(
+      compute_exhaustive_threshold_scan(
+        predictors = preview$predictors,
+        missing_definition = preview$missing_definition,
+        progress_callback = function(progress_value) {
+          progress_bar$set(
+            value = progress_value,
+            detail = sprintf("%.0f%% completed", 100 * progress_value)
+          )
+        },
+        status_callback = function(msg) {
+          elapsed <- as.numeric(difftime(Sys.time(), started_at, units = "secs"))
+          threshold_scan_status(sprintf("Status: %s | elapsed: %.1fs", msg, elapsed))
+        },
+        cancel_check = function() {
+          isTRUE(threshold_scan_cancel_requested())
+        }
+      ),
+      error = function(e) {
+        if (grepl("cancelled", conditionMessage(e), ignore.case = TRUE)) {
+          threshold_scan_status("Status: stopped by user.")
+          return(NULL)
+        }
+        stop(e)
       }
     )
+
     threshold_scan_results(results)
     if (!is.null(results) && nrow(results) > 0) {
       best <- results[1, , drop = FALSE]
       updateNumericInput(session, "ml_missing_threshold_cols", value = as.numeric(best$thr_col))
       updateNumericInput(session, "ml_missing_threshold_rows", value = as.numeric(best$thr_row))
+
+      min_missing <- min(results$missing_pct_after, na.rm = TRUE)
+      max_missing <- max(results$missing_pct_after, na.rm = TRUE)
+      min_filled <- min(results$filled_cells, na.rm = TRUE)
+      max_filled <- max(results$filled_cells, na.rm = TRUE)
+      threshold_scan_minmax(sprintf(
+        "Min/Max found: missingness %.2f%% to %.2f%% | filled cells %s to %s",
+        min_missing, max_missing, format(min_filled, big.mark = ",", scientific = FALSE),
+        format(max_filled, big.mark = ",", scientific = FALSE)
+      ))
+    } else if (isTRUE(threshold_scan_cancel_requested())) {
+      threshold_scan_minmax("Min/Max found: scan stopped before completing.")
+      return(invisible(NULL))
+    } else {
+      threshold_scan_minmax("Min/Max found: no valid combinations.")
     }
+
     elapsed_total <- as.numeric(difftime(Sys.time(), started_at, units = "secs"))
     threshold_scan_status(sprintf(
       "Status: completed. Tested %s combinations in %.1fs.",
