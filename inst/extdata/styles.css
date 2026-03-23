@@ -204,3 +204,19 @@ button.ml-section-toggle:focus,
 .ml-summary-row-changed td {
   background: #fff7df !important;
 }
+
+
+.ml-threshold-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ml-threshold-status {
+  margin-top: 8px;
+}
+
+.ml-threshold-minmax {
+  margin-top: 4px;
+}
