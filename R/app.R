@@ -1715,6 +1715,7 @@ server <- function(input, output, session) {
         do_dataset_seed <- 0
         loop_dataset_seedi <- as.numeric(input$ml_dataset_seedi)
         loop_dataset_seedf <- as.numeric(input$ml_dataset_seedf)
+        metric_label <- if (is.factor(Y)) "Accuracy" else "R2"
         if (!is.na(loop_dataset_seedi) && !is.na(loop_dataset_seedf)) {
           do_dataset_seed <- 1
         }
@@ -1757,6 +1758,11 @@ server <- function(input, output, session) {
           do_seed <- 0
           loop_seedi <- as.numeric(input$ml_seedi)
           loop_seedf <- as.numeric(input$ml_seedf)
+          total_seed_runs <- if (!is.na(loop_seedi) && !is.na(loop_seedf)) {
+            max(1, (loop_seedf - loop_seedi + 1))
+          } else {
+            1
+          }
           if (!is.na(loop_seedi) && !is.na(loop_seedf)) {
             do_seed <- 1
           }
@@ -1780,12 +1786,17 @@ server <- function(input, output, session) {
                 set.seed(loop_seed)
               }
               tryCatch({
+                seed_position <- if (do_seed == 1) (loop_seed - loop_seedi + 1) else 1
                 incProgress((1 * count_model / (length(input$ml_checkbox_group) + 1)),
                   detail = paste0(
-                    "Fitting model: ", model_name, " (", loop_dataset_seed, ":", loop_seed, ")\n",
-                    "Progress: ", count_model, " of ", length(input$ml_checkbox_group), "\n",
-                    "Best: ", best_model, " | Result: ", if (is.finite(best_result)) round(best_result, 4) else "N/A", "\n",
-                    "Worst: ", worst_model, " | Result: ", if (is.finite(worst_result)) round(worst_result, 4) else "N/A"
+                    "Current model: ", model_name, "\n",
+                    "Dataset/Train seed: ", loop_dataset_seed, "/", loop_seed, "\n",
+                    "Model progress: ", count_model, "/", length(input$ml_checkbox_group),
+                    " | Seed progress: ", seed_position, "/", total_seed_runs, "\n",
+                    "Best ", metric_label, ": ", if (is.finite(best_result)) round(best_result, 4) else "N/A",
+                    " (", best_model, ")\n",
+                    "Worst ", metric_label, ": ", if (is.finite(worst_result)) round(worst_result, 4) else "N/A",
+                    " (", worst_model, ")"
                   ))
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
