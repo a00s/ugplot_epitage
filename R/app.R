@@ -1772,6 +1772,12 @@ server <- function(input, output, session) {
     registerDoParallel(cl)
 
     check_ml_cancel <- function() {
+      if (exists("serviceApp", envir = asNamespace("shiny"), inherits = FALSE)) {
+        shiny:::serviceApp()
+      }
+      if (exists("flushReact", envir = asNamespace("shiny"), inherits = FALSE)) {
+        shiny:::flushReact()
+      }
       later::run_now(timeoutSecs = 0.05)
       if (isTRUE(ml_run_cancel_requested())) {
         stop("ML run cancelled by user.", call. = FALSE)
