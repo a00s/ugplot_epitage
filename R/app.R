@@ -925,8 +925,8 @@ server <- function(input, output, session) {
   disable("merge_all_rows")
   session$allowReconnect(TRUE)
 
-  ml_data_table <- reactiveVal()
-  ml_table_results <- reactiveVal()
+  ml_data_table <- reactiveVal(data.frame())
+  ml_table_results <- reactiveVal(data.frame())
   ml_plot_importance <- reactiveVal()
   num_rows <- reactiveVal(0)
   num_cols <- reactiveVal(0)
@@ -1567,7 +1567,11 @@ server <- function(input, output, session) {
   ####### TAB 5) MACHINE LEARNING
   all_models_reactive <- reactiveVal(list())
   output$ml_table_results_output <- DT::renderDT({
-    datatable(ml_table_results(),
+    ml_results <- ml_table_results()
+    if (!is.data.frame(ml_results)) {
+      ml_results <- data.frame()
+    }
+    datatable(ml_results,
       options = list(lengthChange = FALSE, paging = FALSE, searching = FALSE, info = FALSE),
       rownames = FALSE)
   })
@@ -1705,7 +1709,7 @@ server <- function(input, output, session) {
             }
           }
         }
-        ml_table_results("")
+        ml_table_results(data.frame())
         do_dataset_seed <- 0
         loop_dataset_seedi <- as.numeric(input$ml_dataset_seedi)
         loop_dataset_seedf <- as.numeric(input$ml_dataset_seedf)
@@ -1799,11 +1803,30 @@ server <- function(input, output, session) {
                 })
                 if (is.null(result)) next
                 pred <- predict(model, newdata = testSet)
-                ml_pred_real <- data.frame(Actual = testSet[[target_name]], Predicted = pred)
+                if (is.null(pred) || length(pred) == 0) {
+                  stop("model returned empty predictions")
+                }
+
+                pred_indices <- names(pred)
+                if (!is.null(pred_indices) && length(pred_indices) == length(pred) && all(pred_indices %in% rownames(testSet))) {
+                  actual_values <- testSet[pred_indices, target_name, drop = TRUE]
+                } else if (length(pred) == nrow(testSet)) {
+                  actual_values <- testSet[[target_name]]
+                } else {
+                  min_len <- min(length(pred), nrow(testSet))
+                  pred <- pred[seq_len(min_len)]
+                  actual_values <- testSet[[target_name]][seq_len(min_len)]
+                }
+
+                if (length(actual_values) != length(pred)) {
+                  stop("prediction length does not match target length")
+                }
+
+                ml_pred_real <- data.frame(Actual = actual_values, Predicted = pred)
                 model_prediction <- data.frame(Model = model_name, "Prediction" = ml_pred_real)
                 ml_prediction[[model_name]] <<- model_prediction
-                if (is.factor(testSet[[target_name]])) {
-                  accuracy <- sum(pred == testSet[[target_name]]) / length(pred)
+                if (is.factor(actual_values)) {
+                  accuracy <- sum(pred == actual_values) / length(pred)
                   if (accuracy > best_result) {
                     best_result <- accuracy
                     best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
@@ -1816,23 +1839,41 @@ server <- function(input, output, session) {
                   ml_table_results(rbind(ml_table_results(), model_results))
                   temp_models_list[[model_name]] <- model
                 } else {
-                  result_pred <- postResample(pred, testSet[[target_name]])
-                  if (result_pred["Rsquared"] > best_result) {
-                    best_result <- result_pred["Rsquared"]
+                  result_pred <- postResample(pred, actual_values)
+                  rsq_value <- unname(result_pred["Rsquared"])
+                  mae_value <- unname(result_pred["MAE"])
+                  if (is.na(rsq_value) || is.na(mae_value)) {
+                    stop("regression metrics returned NA (check missing values after threshold filtering)")
+                  }
+                  if (rsq_value > best_result) {
+                    best_result <- rsq_value
                     best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
                     best_model_object(model)
                   }
                   model_results <- data.frame(Model = model_name,
-                    "R2" = result_pred["Rsquared"],
-                    "MAE" = result_pred["MAE"],
+                    "R2" = rsq_value,
+                    "MAE" = mae_value,
                     "Dataset seed" = loop_dataset_seed,
                     "Training seed" = loop_seed)
                   ml_table_results(rbind(ml_table_results(), model_results))
-                  if (result_pred["Rsquared"] >= 0.6) {
+                  if (rsq_value >= 0.6) {
                     temp_models_list[[model_name]] <- model
                   }
                 }
-                print(head(ml_table_results()[order(-as.numeric(as.character(ml_table_results()$Accuracy))), ], 10))
+                current_results <- ml_table_results()
+                sort_column <- if ("Accuracy" %in% names(current_results)) {
+                  "Accuracy"
+                } else if ("R2" %in% names(current_results)) {
+                  "R2"
+                } else {
+                  NULL
+                }
+                if (!is.null(sort_column) && nrow(current_results) > 0) {
+                  ordered_idx <- order(-as.numeric(as.character(current_results[[sort_column]])))
+                  print(head(current_results[ordered_idx, , drop = FALSE], 10))
+                } else {
+                  print(current_results)
+                }
               }, error = function(e) {
                 ml_error_message_text(paste(ml_error_message_text(), " ", "Couldn't run model", model_name, ":", conditionMessage(e)))
                 print(paste("Couldn't run model", model_name, ":", conditionMessage(e)))
