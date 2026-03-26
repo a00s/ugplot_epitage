@@ -1067,6 +1067,7 @@ server <- function(input, output, session) {
     tryCatch({
       df_pre <<- read.table(filepath, header = TRUE, sep = tab_separator(), row.names = 1,
         dec = ".", stringsAsFactors = FALSE, strip.white = TRUE, skip = skipline)
+      reset_missing_strategy_ui()
       updateTextAreaInput(session, "textarea_columns", value = paste(names(df_pre), collapse = "\n"))
       updateTextAreaInput(session, "textarea_rows", value = paste(rownames(df_pre), collapse = "\n"))
     }, error = function(e) {
@@ -1242,6 +1243,17 @@ server <- function(input, output, session) {
   output$ml_threshold_scan_status <- renderText({
     threshold_scan_status()
   })
+
+  reset_missing_strategy_ui <- function() {
+    updateCheckboxGroupInput(session, "ml_missing_definition", selected = c("empty", "na"))
+    updateSelectInput(session, "ml_missing_strategy", selected = "none")
+    updateSelectInput(session, "ml_imputation_scope", selected = "split_separate")
+    updateSelectInput(session, "ml_threshold_scope", selected = "train_only")
+    updateNumericInput(session, "ml_missing_threshold_cols", value = 100)
+    updateNumericInput(session, "ml_missing_threshold_rows", value = 100)
+    threshold_scan_results(NULL)
+    threshold_scan_status("Status: idle (click the button to run exhaustive scan).")
+  }
 
   observeEvent(input$ml_run_threshold_scan, {
     preview <- missing_preview_data()
@@ -1477,6 +1489,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$load_sample, {
     dff <<- sample_data
+    reset_missing_strategy_ui()
     head(dff)
     load_dataset_into_table(session)
   })
