@@ -1152,18 +1152,27 @@ server <- function(input, output, session) {
       label = if (is_open) "\u25be Missing Data Strategy" else "\u25b8 Missing Data Strategy")
   }, ignoreInit = TRUE)
 
-  observe({
+  zero_exception_choices_state <- reactiveVal(character(0))
+  observeEvent(list(input$column_checkbox_group, input$ml_target), {
     req(input$column_checkbox_group, input$ml_target)
     available_predictors <- setdiff(input$column_checkbox_group, input$ml_target)
-    selected_exceptions <- input$ml_zero_exceptions
+    selected_exceptions <- isolate(input$ml_zero_exceptions)
     if (is.null(selected_exceptions)) selected_exceptions <- character(0)
+    selected_exceptions <- intersect(selected_exceptions, available_predictors)
+
+    choices_changed <- !identical(zero_exception_choices_state(), available_predictors)
+    if (!choices_changed) {
+      return(invisible(NULL))
+    }
+
+    zero_exception_choices_state(available_predictors)
     updateSelectizeInput(
       session, "ml_zero_exceptions",
       choices = available_predictors,
-      selected = intersect(selected_exceptions, available_predictors),
-      server = TRUE
+      selected = selected_exceptions,
+      server = FALSE
     )
-  })
+  }, ignoreInit = FALSE)
 
   missing_preview_data <- reactive({
     req(input$ml_target)
