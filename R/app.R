@@ -356,6 +356,20 @@ ui <- fluidPage(
                     choices = c("Empty string" = "empty", "NA" = "na", "Zero (0, 0.0, 0.0000)" = "zero"),
                     selected = c("empty", "na")
                   ),
+                  conditionalPanel(
+                    condition = "input.ml_missing_definition && input.ml_missing_definition.indexOf('zero') !== -1",
+                    selectizeInput(
+                      "ml_zero_exceptions",
+                      "Zero rule exceptions (columns where 0 is valid):",
+                      choices = NULL,
+                      selected = character(0),
+                      multiple = TRUE,
+                      options = list(
+                        plugins = list("remove_button"),
+                        placeholder = "Select columns to ignore zero-as-missing"
+                      )
+                    )
+                  ),
                   selectInput(
                     "ml_missing_strategy",
                     "How to handle missing values:",
@@ -518,7 +532,7 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
 }
 
-build_missing_mask <- function(df, missing_definition = c("empty", "na")) {
+build_missing_mask <- function(df, missing_definition = c("empty", "na"), zero_exceptions = character(0)) {
   mask <- matrix(FALSE, nrow = nrow(df), ncol = ncol(df))
   colnames(mask) <- colnames(df)
   rownames(mask) <- rownames(df)
@@ -531,7 +545,7 @@ build_missing_mask <- function(df, missing_definition = c("empty", "na")) {
     if ("empty" %in% missing_definition) {
       missing_col <- missing_col | (!is.na(col_data) & trimws(as.character(col_data)) == "")
     }
-    if ("zero" %in% missing_definition) {
+    if ("zero" %in% missing_definition && !(colnames(df)[j] %in% zero_exceptions)) {
       suppressWarnings({
         numeric_col <- as.numeric(as.character(col_data))
       })
@@ -543,13 +557,14 @@ build_missing_mask <- function(df, missing_definition = c("empty", "na")) {
 }
 
 apply_missing_filters_with_order <- function(predictors, missing_definition,
+                                             zero_exceptions = character(0),
                                              threshold_cols = 100, threshold_rows = 100,
                                              order = c("cols_first", "rows_first")) {
   order <- match.arg(order)
   original_cols <- colnames(predictors)
   original_rows <- seq_len(nrow(predictors))
   filtered_predictors <- predictors
-  filtered_mask <- build_missing_mask(filtered_predictors, missing_definition)
+  filtered_mask <- build_missing_mask(filtered_predictors, missing_definition, zero_exceptions)
   keep_cols <- colnames(filtered_predictors)
   keep_rows <- seq_len(nrow(filtered_predictors))
 
@@ -558,7 +573,7 @@ apply_missing_filters_with_order <- function(predictors, missing_definition,
       col_missing_pct <- colMeans(filtered_mask) * 100
       keep_cols <- names(col_missing_pct[col_missing_pct <= threshold_cols])
       filtered_predictors <- filtered_predictors[, keep_cols, drop = FALSE]
-      filtered_mask <- build_missing_mask(filtered_predictors, missing_definition)
+      filtered_mask <- build_missing_mask(filtered_predictors, missing_definition, zero_exceptions)
     }
 
     if (ncol(filtered_predictors) > 0) {
@@ -578,7 +593,7 @@ apply_missing_filters_with_order <- function(predictors, missing_definition,
       col_missing_pct <- colMeans(filtered_mask) * 100
       keep_cols <- names(col_missing_pct[col_missing_pct <= threshold_cols])
       filtered_predictors <- filtered_predictors[, keep_cols, drop = FALSE]
-      filtered_mask <- build_missing_mask(filtered_predictors, missing_definition)
+      filtered_mask <- build_missing_mask(filtered_predictors, missing_definition, zero_exceptions)
     }
   }
 
@@ -593,10 +608,12 @@ apply_missing_filters_with_order <- function(predictors, missing_definition,
 }
 
 apply_missing_filters <- function(predictors, missing_definition,
+                                  zero_exceptions = character(0),
                                   threshold_cols = 100, threshold_rows = 100) {
   apply_missing_filters_with_order(
     predictors = predictors,
     missing_definition = missing_definition,
+    zero_exceptions = zero_exceptions,
     threshold_cols = threshold_cols,
     threshold_rows = threshold_rows,
     order = "cols_first"
@@ -604,10 +621,11 @@ apply_missing_filters <- function(predictors, missing_definition,
 }
 
 compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
+                                              zero_exceptions = character(0),
                                               progress_callback = NULL, status_callback = NULL) {
   original_rows <- nrow(predictors)
   original_cols <- ncol(predictors)
-  full_mask <- build_missing_mask(predictors, missing_definition)
+  full_mask <- build_missing_mask(predictors, missing_definition, zero_exceptions)
 
   scan_one_order <- function(scan_order = c("cols_first", "rows_first"), phase_start = 0, phase_width = 0.5) {
     scan_order <- match.arg(scan_order)
@@ -637,6 +655,7 @@ compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
           filtered <- apply_missing_filters_with_order(
             predictors = predictors,
             missing_definition = missing_definition,
+            zero_exceptions = zero_exceptions,
             threshold_cols = thr_col,
             threshold_rows = thr_row,
             order = "cols_first"
@@ -689,6 +708,7 @@ compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
           filtered <- apply_missing_filters_with_order(
             predictors = predictors,
             missing_definition = missing_definition,
+            zero_exceptions = zero_exceptions,
             threshold_cols = thr_col,
             threshold_rows = thr_row,
             order = "rows_first"
@@ -768,6 +788,7 @@ run_methylimp2 <- function(data_with_na) {
 }
 
 apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, missing_definition,
+                                   zero_exceptions = character(0),
                                    threshold_cols = 50, threshold_rows = 50,
                                    threshold_scope = "train_only") {
   train_set <- as.data.frame(trainSet)
@@ -776,8 +797,8 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
   predictors_train <- train_set[, setdiff(colnames(train_set), target_name), drop = FALSE]
   predictors_test <- test_set[, setdiff(colnames(test_set), target_name), drop = FALSE]
 
-  train_missing <- build_missing_mask(predictors_train, missing_definition)
-  test_missing <- build_missing_mask(predictors_test, missing_definition)
+  train_missing <- build_missing_mask(predictors_train, missing_definition, zero_exceptions)
+  test_missing <- build_missing_mask(predictors_test, missing_definition, zero_exceptions)
 
   if (identical(threshold_scope, "full_before_split")) {
     filtered_train <- list(
@@ -790,6 +811,7 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
     filtered_train <- apply_missing_filters(
       predictors = predictors_train,
       missing_definition = missing_definition,
+      zero_exceptions = zero_exceptions,
       threshold_cols = threshold_cols,
       threshold_rows = threshold_rows
     )
@@ -799,7 +821,7 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
 
   if (ncol(predictors_test) > 0) {
     predictors_test <- predictors_test[, filtered_train$keep_cols, drop = FALSE]
-    test_missing <- build_missing_mask(predictors_test, missing_definition)
+    test_missing <- build_missing_mask(predictors_test, missing_definition, zero_exceptions)
   }
 
   if (ncol(predictors_train) > 0) {
@@ -812,7 +834,7 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
     keep_test_rows <- which(test_row_missing_pct <= threshold_rows)
     predictors_test <- predictors_test[keep_test_rows, , drop = FALSE]
     test_set <- test_set[keep_test_rows, , drop = FALSE]
-    test_missing <- build_missing_mask(predictors_test, missing_definition)
+    test_missing <- build_missing_mask(predictors_test, missing_definition, zero_exceptions)
   }
 
   if (strategy == "replace_zero") {
@@ -1021,6 +1043,7 @@ server <- function(input, output, session) {
       filtered <- apply_missing_filters(
         predictors = preview$predictors,
         missing_definition = preview$missing_definition,
+        zero_exceptions = preview$zero_exceptions,
         threshold_cols = input$ml_missing_threshold_cols,
         threshold_rows = input$ml_missing_threshold_rows
       )
@@ -1037,6 +1060,7 @@ server <- function(input, output, session) {
           target_name = preview$target_name,
           strategy = input$ml_missing_strategy,
           missing_definition = preview$missing_definition,
+          zero_exceptions = preview$zero_exceptions,
           threshold_cols = input$ml_missing_threshold_cols,
           threshold_rows = input$ml_missing_threshold_rows,
           threshold_scope = "full_before_split"
@@ -1128,6 +1152,19 @@ server <- function(input, output, session) {
       label = if (is_open) "\u25be Missing Data Strategy" else "\u25b8 Missing Data Strategy")
   }, ignoreInit = TRUE)
 
+  observe({
+    req(input$column_checkbox_group, input$ml_target)
+    available_predictors <- setdiff(input$column_checkbox_group, input$ml_target)
+    selected_exceptions <- input$ml_zero_exceptions
+    if (is.null(selected_exceptions)) selected_exceptions <- character(0)
+    updateSelectizeInput(
+      session, "ml_zero_exceptions",
+      choices = available_predictors,
+      selected = intersect(selected_exceptions, available_predictors),
+      server = TRUE
+    )
+  })
+
   missing_preview_data <- reactive({
     req(input$ml_target)
     req(input$row_checkbox_group, input$column_checkbox_group)
@@ -1140,18 +1177,23 @@ server <- function(input, output, session) {
     if (length(missing_definition) == 0) {
       missing_definition <- character(0)
     }
+    zero_exceptions <- input$ml_zero_exceptions
+    if (is.null(zero_exceptions)) {
+      zero_exceptions <- character(0)
+    }
     list(
       subset_table = subset_table,
       target_name = target_name,
       predictors = predictors,
-      missing_definition = missing_definition
+      missing_definition = missing_definition,
+      zero_exceptions = zero_exceptions
     )
   })
 
   output$ml_missing_summary <- renderUI({
     preview <- missing_preview_data()
     predictors <- preview$predictors
-    missing_mask <- build_missing_mask(predictors, preview$missing_definition)
+    missing_mask <- build_missing_mask(predictors, preview$missing_definition, preview$zero_exceptions)
     missing_count <- sum(missing_mask)
     total_cells <- length(as.matrix(predictors))
     missing_pct <- if (total_cells > 0) round(100 * missing_count / total_cells, 2) else 0
@@ -1161,6 +1203,7 @@ server <- function(input, output, session) {
     filtered <- apply_missing_filters(
       predictors = predictors,
       missing_definition = preview$missing_definition,
+      zero_exceptions = preview$zero_exceptions,
       threshold_cols = col_threshold,
       threshold_rows = row_threshold
     )
@@ -1245,6 +1288,7 @@ server <- function(input, output, session) {
 
   reset_missing_strategy_ui <- function() {
     updateCheckboxGroupInput(session, "ml_missing_definition", selected = c("empty", "na"))
+    updateSelectizeInput(session, "ml_zero_exceptions", selected = character(0))
     updateSelectInput(session, "ml_missing_strategy", selected = "none")
     updateSelectInput(session, "ml_imputation_scope", selected = "split_separate")
     updateNumericInput(session, "ml_missing_threshold_cols", value = 100)
@@ -1255,7 +1299,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$ml_run_threshold_scan, {
     preview <- missing_preview_data()
-    preview_missing_mask <- build_missing_mask(preview$predictors, preview$missing_definition)
+    preview_missing_mask <- build_missing_mask(preview$predictors, preview$missing_definition, preview$zero_exceptions)
     preview_missing_count <- if (length(preview_missing_mask) > 0) sum(preview_missing_mask) else 0
     if (preview_missing_count == 0) {
       threshold_scan_results(NULL)
@@ -1271,6 +1315,7 @@ server <- function(input, output, session) {
     results <- compute_exhaustive_threshold_scan(
       predictors = preview$predictors,
       missing_definition = preview$missing_definition,
+      zero_exceptions = preview$zero_exceptions,
       progress_callback = function(progress_value) {
         progress_bar$set(
           value = progress_value,
@@ -1330,6 +1375,7 @@ server <- function(input, output, session) {
     filtered <- apply_missing_filters(
       predictors = preview$predictors,
       missing_definition = preview$missing_definition,
+      zero_exceptions = preview$zero_exceptions,
       threshold_cols = input$ml_missing_threshold_cols,
       threshold_rows = input$ml_missing_threshold_rows
     )
@@ -1825,12 +1871,17 @@ server <- function(input, output, session) {
           if (is.null(missing_definition)) {
             missing_definition <- c("empty", "na")
           }
+          zero_exceptions <- input$ml_zero_exceptions
+          if (is.null(zero_exceptions)) {
+            zero_exceptions <- character(0)
+          }
           print(paste("Threshold scope:", threshold_scope, "| Missing strategy:", input$ml_missing_strategy, "| Imputation scope:", imputation_scope))
           if (identical(threshold_scope, "full_before_split")) {
             predictors_all <- X[, setdiff(colnames(X), target_name), drop = FALSE]
             filtered_all <- apply_missing_filters(
               predictors = predictors_all,
               missing_definition = missing_definition,
+              zero_exceptions = zero_exceptions,
               threshold_cols = input$ml_missing_threshold_cols,
               threshold_rows = input$ml_missing_threshold_rows
             )
@@ -1846,6 +1897,7 @@ server <- function(input, output, session) {
               target_name = target_name,
               strategy = missing_strategy,
               missing_definition = missing_definition,
+              zero_exceptions = zero_exceptions,
               threshold_cols = input$ml_missing_threshold_cols,
               threshold_rows = input$ml_missing_threshold_rows,
               threshold_scope = "full_before_split"
@@ -1870,6 +1922,7 @@ server <- function(input, output, session) {
               target_name = target_name,
               strategy = strategy_after_split,
               missing_definition = missing_definition,
+              zero_exceptions = zero_exceptions,
               threshold_cols = input$ml_missing_threshold_cols,
               threshold_rows = input$ml_missing_threshold_rows,
               threshold_scope = threshold_scope
