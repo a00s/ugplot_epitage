@@ -1855,7 +1855,7 @@ server <- function(input, output, session) {
         do_dataset_seed <- 0
         loop_dataset_seedi <- as.numeric(input$ml_dataset_seedi)
         loop_dataset_seedf <- as.numeric(input$ml_dataset_seedf)
-        metric_label <- if (is.factor(Y)) "Accuracy" else "R2"
+        metric_label <- if (is.factor(Y)) "Accuracy" else "R2 (MAE/RMSE na tabela)"
         if (!is.na(loop_dataset_seedi) && !is.na(loop_dataset_seedf)) {
           do_dataset_seed <- 1
         }
@@ -2043,7 +2043,8 @@ server <- function(input, output, session) {
                   result_pred <- postResample(pred, actual_values)
                   rsq_value <- unname(result_pred["Rsquared"])
                   mae_value <- unname(result_pred["MAE"])
-                  if (is.na(rsq_value) || is.na(mae_value)) {
+                  rmse_value <- unname(result_pred["RMSE"])
+                  if (is.na(rsq_value) || is.na(mae_value) || is.na(rmse_value)) {
                     stop("regression metrics returned NA (check missing values after threshold filtering)")
                   }
                   if (rsq_value > best_result) {
@@ -2058,6 +2059,7 @@ server <- function(input, output, session) {
                   model_results <- data.frame(Model = model_name,
                     "R2" = rsq_value,
                     "MAE" = mae_value,
+                    "RMSE" = rmse_value,
                     "Dataset seed" = loop_dataset_seed,
                     "Training seed" = loop_seed,
                     "Threshold scope" = threshold_scope,
