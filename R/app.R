@@ -124,6 +124,7 @@ ml_available <<- list()
 ml_not_available <<- list()
 ml_prediction <<- list()
 best_model_object <- reactiveVal(NULL)
+best_model_preprocess <- reactiveVal(NULL)
 
 getImage <- function(fileName) {
   image_path <- resolve_extdata(fileName)
@@ -458,6 +459,7 @@ ui <- fluidPage(
         # File input and model details display
         fileInput("model_file", "Load RDS Model", accept = c(".rds")),
         verbatimTextOutput("model_details"),
+        uiOutput("model_preprocess_ui"),
         ## NOVO: mostrar variável alvo do modelo
         uiOutput("model_target_var_ui"),
 
@@ -787,6 +789,25 @@ run_methylimp2 <- function(data_with_na) {
   as.data.frame(imputed_matrix, stringsAsFactors = FALSE)
 }
 
+apply_saved_preprocess <- function(df, preprocess_meta) {
+  if (is.null(preprocess_meta) || is.null(preprocess_meta$strategy)) {
+    return(df)
+  }
+
+  if (identical(preprocess_meta$strategy, "knn") && !is.null(preprocess_meta$pp)) {
+    num_cols <- preprocess_meta$num_cols
+    num_cols <- intersect(num_cols, colnames(df))
+    if (length(num_cols) > 0) {
+      knn_data <- df[, num_cols, drop = FALSE]
+      suppressWarnings(storage.mode(knn_data) <- "numeric")
+      knn_data <- predict(preprocess_meta$pp, knn_data)
+      df[, num_cols] <- knn_data[, num_cols, drop = FALSE]
+    }
+  }
+
+  df
+}
+
 apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, missing_definition,
                                    zero_exceptions = character(0),
                                    threshold_cols = 50, threshold_rows = 50,
@@ -796,6 +817,7 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
 
   predictors_train <- train_set[, setdiff(colnames(train_set), target_name), drop = FALSE]
   predictors_test <- test_set[, setdiff(colnames(test_set), target_name), drop = FALSE]
+  preprocess_meta <- list(strategy = strategy)
 
   train_missing <- build_missing_mask(predictors_train, missing_definition, zero_exceptions)
   test_missing <- build_missing_mask(predictors_test, missing_definition, zero_exceptions)
@@ -864,6 +886,7 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
       pp <- caret::preProcess(knn_train, method = "knnImpute")
       knn_train_imputed <- predict(pp, knn_train)
       knn_test_imputed <- predict(pp, knn_test)
+      preprocess_meta <- list(strategy = "knn", pp = pp, num_cols = num_cols)
       predictors_train[, num_cols] <- knn_train_imputed[, num_cols, drop = FALSE]
       predictors_test[, num_cols] <- knn_test_imputed[, num_cols, drop = FALSE]
     }
@@ -912,7 +935,7 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
   names(train_set)[1] <- target_name
   names(test_set)[1] <- target_name
 
-  list(train_set = train_set, test_set = test_set)
+  list(train_set = train_set, test_set = test_set, preprocess_meta = preprocess_meta)
 }
 
 load_dataset_into_table <- function(localsession) {
@@ -1024,7 +1047,12 @@ server <- function(input, output, session) {
       paste0("ugplot_best_model.rds")
     },
     content = function(file) {
-      saveRDS(best_model_object(), file = file)
+      saveRDS(list(
+        model = best_model_object(),
+        preprocess_meta = best_model_preprocess(),
+        ugplot_bundle_version = 1,
+        saved_at = as.character(Sys.time())
+      ), file = file)
     }
   )
 
@@ -1817,6 +1845,7 @@ server <- function(input, output, session) {
 
     temp_models_list <- list()
     ml_prediction <<- list()
+    best_model_preprocess(NULL)
     ml_error_message_text("")
 
     tryCatch({
@@ -1860,6 +1889,7 @@ server <- function(input, output, session) {
           do_dataset_seed <- 1
         }
         for (loop_dataset_seed in loop_dataset_seedi:loop_dataset_seedf) {
+          preprocess_meta_for_seed <- NULL
           X <- X_base
           Y <- Y_base
           if (do_dataset_seed == 1) {
@@ -1905,6 +1935,7 @@ server <- function(input, output, session) {
             )
             X <- preprocessed_full$train_set
             Y <- X[[target_name]]
+            preprocess_meta_for_seed <- preprocessed_full$preprocess_meta
           }
           trainIndex <- createDataPartition(Y, p = .8, list = FALSE, times = 1)
           trainSet <- X[trainIndex, ]
@@ -1930,6 +1961,7 @@ server <- function(input, output, session) {
             )
             trainSet <- processed_data$train_set
             testSet <- processed_data$test_set
+            preprocess_meta_for_seed <- processed_data$preprocess_meta
           }
           if (nrow(trainSet) < 5 || ncol(trainSet) < 2) {
             ml_error_message_text(paste(ml_error_message_text(), " ", "Not enough data after missing strategy for seed", loop_dataset_seed, "/"))
@@ -2026,6 +2058,7 @@ server <- function(input, output, session) {
                     best_result <- accuracy
                     best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
                     best_model_object(model)
+                    best_model_preprocess(preprocess_meta_for_seed)
                   }
                   if (accuracy < worst_result) {
                     worst_result <- accuracy
@@ -2051,6 +2084,7 @@ server <- function(input, output, session) {
                     best_result <- rsq_value
                     best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
                     best_model_object(model)
+                    best_model_preprocess(preprocess_meta_for_seed)
                   }
                   if (rsq_value < worst_result) {
                     worst_result <- rsq_value
@@ -2110,12 +2144,33 @@ observeEvent(input$model_file, {
   req(input$model_file)
   tryCatch({
     # 1) Carrega o objeto
-    model_obj <- readRDS(input$model_file$datapath)
-    loaded_model(model_obj)
+    loaded_obj <- readRDS(input$model_file$datapath)
+    model_obj <- loaded_obj
+    preprocess_meta <- NULL
+    if (is.list(loaded_obj) && !is.null(loaded_obj$model)) {
+      model_obj <- loaded_obj$model
+      preprocess_meta <- loaded_obj$preprocess_meta
+    }
+    loaded_model(list(model = model_obj, preprocess_meta = preprocess_meta))
 
     # 2) Mostra resumo do modelo
     output$model_details <- renderPrint({
       print(summary(model_obj))
+    })
+    output$model_preprocess_ui <- renderUI({
+      if (!is.null(preprocess_meta) && !is.null(preprocess_meta$strategy)) {
+        tags$p(
+          strong("Model preprocessing: "),
+          tags$span(toupper(preprocess_meta$strategy), style = "color: darkgreen;"),
+          " (will be applied automatically in analysis)"
+        )
+      } else {
+        tags$p(
+          strong("Model preprocessing: "),
+          tags$span("not available in this RDS", style = "color: #B22222;"),
+          " (compatibility mode)"
+        )
+      }
     })
 
     # 3) Prepara vetor de colunas do dataset
@@ -2183,18 +2238,20 @@ observeEvent(input$model_file, {
   observeEvent(input$run_model_analysis, {
     req(loaded_model())
     req(changed_table)
+    model_container <- loaded_model()
+    model_obj <- model_container$model
+    preprocess_meta <- model_container$preprocess_meta
 
     # 1) Prepara os dados
     analysis_data <- as.data.frame(changed_table)
-    analysis_data[is.na(analysis_data)]      <- 0
-    analysis_data[analysis_data == ""]       <- 0
+    analysis_data[analysis_data == ""]       <- NA
     analysis_data <- analysis_data[, !apply(analysis_data, 2, function(col) all(col == 0))]
 
     # 2) Garante que todos os features do modelo existam nos dados
-    model_features <- loaded_model()$finalModel$xNames
+    model_features <- model_obj$finalModel$xNames
     for (feat in model_features) {
       if (!(feat %in% colnames(analysis_data))) {
-        analysis_data[[feat]] <- 0
+        analysis_data[[feat]] <- NA
       }
     }
 
@@ -2202,7 +2259,7 @@ observeEvent(input$model_file, {
     dataset_col <- input$dataset_response_col
     if (!is.null(dataset_col) && dataset_col %in% colnames(analysis_data)) {
       # classificação só se houver ao menos 1 nível
-      if (length(loaded_model()$levels) > 0) {
+      if (length(model_obj$levels) > 0) {
         analysis_data[[dataset_col]] <- as.factor(analysis_data[[dataset_col]])
         ground_truth <- analysis_data[[dataset_col]]
       } else {
@@ -2214,9 +2271,12 @@ observeEvent(input$model_file, {
       ground_truth <- NA
     }
 
+    analysis_data <- apply_saved_preprocess(analysis_data, preprocess_meta)
+    analysis_data[is.na(analysis_data)] <- 0
+
     sample_names   <- rownames(analysis_data)
-    pred_raw       <- predict(loaded_model(), newdata = analysis_data)
-    is_classif     <- length(loaded_model()$levels) > 0
+    pred_raw       <- predict(model_obj, newdata = analysis_data)
+    is_classif     <- length(model_obj$levels) > 0
 
     if (is_classif) {
 
@@ -2225,7 +2285,7 @@ observeEvent(input$model_file, {
 
       # tenta obter probabilidades
       probs <- tryCatch({
-        predict(loaded_model(), newdata = analysis_data, type = "prob")
+        predict(model_obj, newdata = analysis_data, type = "prob")
       }, error = function(e) NULL)
 
       if (!is.null(probs)) {
