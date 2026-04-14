@@ -496,7 +496,6 @@ ui <- fluidPage(
         verbatimTextOutput("model_analysis_accuracy"),
         br(),
         plotOutput("model_analysis_correlation_plot", height = "520px", width = "520px"),
-        verbatimTextOutput("model_analysis_correlation_metrics"),
         br(),
         downloadButton("downloadModelAnalysisTable", "Download analysis table (CSV)"),
         br(), br(),
@@ -2409,9 +2408,6 @@ observeEvent(input$model_file, {
       output$model_analysis_accuracy <- renderPrint({
         cat("No samples left after missingness filtering.\n")
       })
-      output$model_analysis_correlation_metrics <- renderPrint({
-        cat("Correlation metrics unavailable (no samples).\n")
-      })
       output$model_analysis_correlation_plot <- renderPlot({
         plot.new()
         text(0.5, 0.5, "No samples left after missingness filtering.")
@@ -2547,9 +2543,33 @@ observeEvent(input$model_file, {
             asp = 1
           )
           abline(a = 0, b = 1, col = "gray40", lty = 2, lwd = 2)
+          n_pairs <- length(valid)
+          pearson_r <- if (n_pairs >= 2) stats::cor(gt_valid, pred_valid, method = "pearson") else NA_real_
+          r2 <- if (!is.na(pearson_r)) pearson_r^2 else NA_real_
+          mae <- mean(abs(pred_valid - gt_valid))
           if (length(valid) >= 2) {
             abline(stats::lm(pred_valid ~ gt_valid), col = "#e31a1c", lwd = 2)
           }
+          legend(
+            "topleft",
+            legend = c("Identity line (y = x)", "Regression line"),
+            col = c("gray40", "#e31a1c"),
+            lty = c(2, 1),
+            lwd = c(2, 2),
+            bg = "white",
+            cex = 0.8
+          )
+          legend(
+            "bottomright",
+            legend = c(
+              paste0("n: ", n_pairs),
+              paste0("Pearson R: ", format(round(pearson_r, 6), nsmall = 6)),
+              paste0("R^2: ", format(round(r2, 6), nsmall = 6)),
+              paste0("MAE: ", format(round(mae, 6), nsmall = 6))
+            ),
+            bty = "n",
+            cex = 0.8
+          )
         } else {
           plot.new()
           text(0.5, 0.5, "No valid numeric pairs for correlation plot.")
@@ -2557,33 +2577,6 @@ observeEvent(input$model_file, {
       } else {
         plot.new()
         text(0.5, 0.5, "Correlation plot unavailable for this model/output.")
-      }
-    })
-
-    output$model_analysis_correlation_metrics <- renderPrint({
-      if ("Ground_Truth" %in% colnames(output_table) && "Predicted" %in% colnames(output_table)) {
-        gt <- suppressWarnings(as.numeric(as.character(output_table$Ground_Truth)))
-        pred <- suppressWarnings(as.numeric(as.character(output_table$Predicted)))
-        valid <- which(!is.na(gt) & !is.na(pred))
-        n_pairs <- length(valid)
-        if (n_pairs > 0) {
-          gt_valid <- gt[valid]
-          pred_valid <- pred[valid]
-          pearson_r <- if (n_pairs >= 2) stats::cor(gt_valid, pred_valid, method = "pearson") else NA_real_
-          r2 <- if (!is.na(pearson_r)) pearson_r^2 else NA_real_
-          mae <- mean(abs(pred_valid - gt_valid))
-          cat(
-            "n: ", n_pairs, "\n",
-            "Pearson R: ", pearson_r, "\n",
-            "R^2: ", r2, "\n",
-            "MAE: ", mae, "\n",
-            sep = ""
-          )
-        } else {
-          cat("Correlation metrics unavailable: no valid numeric pairs.\n")
-        }
-      } else {
-        cat("Correlation metrics unavailable for this model/output.\n")
       }
     })
 
