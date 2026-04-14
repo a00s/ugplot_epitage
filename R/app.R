@@ -467,14 +467,38 @@ ui <- fluidPage(
         selectInput("dataset_response_col", "Target column:",
                                                    choices = NULL,
                                                    selected = NULL),
+        checkboxGroupInput(
+          "model_analysis_missing_definition",
+          "Consider as missing:",
+          choices = c(
+            "Empty string" = "empty",
+            "NA" = "na",
+            "Zero (0, 0.0, 0.0000)" = "zero"
+          ),
+          selected = c("empty", "na", "zero")
+        ),
+        numericInput(
+          "model_analysis_missing_threshold_rows",
+          "Remove samples when missingness is above (%)",
+          value = 100,
+          min = 0,
+          max = 100,
+          step = 1
+        ),
 
         # Input for confidence threshold
         numericInput("confidence_threshold", "Confidence Threshold", value = 0.8, min = 0, max = 1, step = 0.01),
         actionButton("run_model_analysis", "Run Analysis"),
         br(), br(),
         # Extra metrics will be displayed here (before the table)
+        uiOutput("model_analysis_missing_summary"),
+        br(),
         verbatimTextOutput("model_analysis_accuracy"),
         br(),
+        plotOutput("model_analysis_correlation_plot", height = "520px", width = "520px"),
+        br(),
+        downloadButton("downloadModelAnalysisTable", "Download analysis table (CSV)"),
+        br(), br(),
         DT::DTOutput("model_analysis_table")
       )
     )
@@ -1031,6 +1055,8 @@ server <- function(input, output, session) {
   tab_separator <- reactiveVal(",")
   file_click_count <- reactiveVal(0)
   last_file_click_count <- 0
+  original_dataset_filename <- reactiveVal("model_analysis_results")
+  model_analysis_results_data <- reactiveVal(data.frame())
 
   output$downloadData <- downloadHandler(
     filename = function() {
@@ -1101,10 +1127,31 @@ server <- function(input, output, session) {
     }
   )
 
+  output$downloadModelAnalysisTable <- downloadHandler(
+    filename = function() {
+      base_name <- tools::file_path_sans_ext(basename(original_dataset_filename()))
+      if (is.null(base_name) || !nzchar(base_name)) {
+        base_name <- "model_analysis_results"
+      }
+      paste0(base_name, ".csv")
+    },
+    content = function(file) {
+      table_to_download <- model_analysis_results_data()
+      req(nrow(table_to_download) > 0)
+      has_content <- vapply(table_to_download, function(col) {
+        normalized <- trimws(as.character(col))
+        any(!is.na(col) & normalized != "")
+      }, logical(1))
+      table_to_download <- table_to_download[, has_content, drop = FALSE]
+      utils::write.csv(table_to_download, file, row.names = FALSE)
+    }
+  )
+
   ####################### TAB 1) LOAD DATA
   observeEvent(input$file1, {
     file_click_count(file_click_count() + 1)
     filepath <- req(input$file1$datapath)
+    original_dataset_filename(input$file1$name)
     skipline <- input$startfromline - 1
     tryCatch({
       df_pre <<- read.table(filepath, header = TRUE, sep = tab_separator(), row.names = 1,
@@ -1560,6 +1607,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$load_sample, {
     dff <<- sample_data
+    original_dataset_filename("sample.csv")
     reset_missing_strategy_ui()
     head(dff)
     load_dataset_into_table(session)
@@ -2232,7 +2280,89 @@ observeEvent(input$model_file, {
   })
 })
 
+  model_analysis_missing_preview <- reactive({
+    req(changed_table)
+    analysis_data_raw <- as.data.frame(changed_table)
+    analysis_data_raw[analysis_data_raw == ""] <- NA
+    analysis_data_raw <- analysis_data_raw[, !apply(analysis_data_raw, 2, function(col) all(col == 0)), drop = FALSE]
 
+    dataset_col <- input$dataset_response_col
+    if (!is.null(dataset_col) && dataset_col %in% colnames(analysis_data_raw)) {
+      predictors <- analysis_data_raw[, setdiff(colnames(analysis_data_raw), dataset_col), drop = FALSE]
+    } else {
+      predictors <- analysis_data_raw
+    }
+
+    missing_definition <- input$model_analysis_missing_definition
+    if (is.null(missing_definition) || length(missing_definition) == 0) {
+      missing_definition <- character(0)
+    }
+    threshold_rows <- input$model_analysis_missing_threshold_rows
+    missing_mask <- build_missing_mask(predictors, missing_definition, zero_exceptions = character(0))
+    row_missing_pct <- if (ncol(missing_mask) > 0) rowMeans(missing_mask) * 100 else rep(0, nrow(predictors))
+    keep_rows <- which(row_missing_pct <= threshold_rows)
+
+    list(
+      predictors = predictors,
+      missing_definition = missing_definition,
+      threshold_rows = threshold_rows,
+      missing_mask = missing_mask,
+      keep_rows = keep_rows
+    )
+  })
+
+  output$model_analysis_missing_summary <- renderUI({
+    preview <- model_analysis_missing_preview()
+    predictors <- preview$predictors
+    missing_mask <- preview$missing_mask
+    keep_rows <- preview$keep_rows
+    missing_count <- if (length(missing_mask) > 0) sum(missing_mask) else 0
+    total_cells <- length(as.matrix(predictors))
+    missing_pct <- if (total_cells > 0) round(100 * missing_count / total_cells, 2) else 0
+    filtered_mask <- if (length(keep_rows) > 0) missing_mask[keep_rows, , drop = FALSE] else matrix(FALSE, nrow = 0, ncol = ncol(missing_mask))
+    missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
+    total_after <- if (length(filtered_mask) > 0) length(filtered_mask) else 0
+
+    make_summary_row <- function(label, before_value, after_value) {
+      row_class <- if (!identical(before_value, after_value)) "ml-summary-row-changed" else ""
+      tags$tr(
+        class = row_class,
+        tags$td(style = "padding: 8px 12px; border-bottom: 1px solid #edf0f3;", label),
+        tags$td(style = "padding: 8px 12px; border-bottom: 1px solid #edf0f3;", as.character(before_value)),
+        tags$td(style = "padding: 8px 12px; border-bottom: 1px solid #edf0f3;", as.character(after_value))
+      )
+    }
+
+    tags$div(
+      tags$h5("Model Analysis Missingness Summary"),
+      tags$table(
+        class = "ml-summary-table",
+        style = "width: 100%; max-width: 760px; border-collapse: collapse; border: 1px solid #e2e6ea; background: #fff;",
+        tags$thead(
+          tags$tr(
+            tags$th(style = "padding: 8px 12px; background: #f5f7fa; border-bottom: 1px solid #e2e6ea;", "Metric"),
+            tags$th(style = "padding: 8px 12px; background: #f5f7fa; border-bottom: 1px solid #e2e6ea;", "Current"),
+            tags$th(style = "padding: 8px 12px; background: #f5f7fa; border-bottom: 1px solid #e2e6ea;", "After threshold")
+          )
+        ),
+        tags$tbody(
+          make_summary_row("Number of features", ncol(predictors), ncol(filtered_mask)),
+          make_summary_row("Number of samples", nrow(predictors), length(keep_rows)),
+          make_summary_row("Missing cells", missing_count, missing_after),
+          make_summary_row("Missingness (%)", paste0(missing_pct, "%"),
+            if (total_after > 0) paste0(round(100 * missing_after / total_after, 2), "%") else "0%")
+        )
+      ),
+      tags$p(
+        style = "margin-top: 8px; margin-bottom: 2px; font-size: 12px; color: #596273;",
+        paste0(
+          "Consider as missing: ",
+          if (length(preview$missing_definition) == 0) "(none selected)" else paste(preview$missing_definition, collapse = ", "),
+          " | Row threshold: ", preview$threshold_rows, "%"
+        )
+      )
+    )
+  })
 
   # Tab 6) MODEL ANALYSIS: Run analysis when clicking the button
   observeEvent(input$run_model_analysis, {
@@ -2244,10 +2374,29 @@ observeEvent(input$model_file, {
 
     # 1) Prepara os dados
     analysis_data <- as.data.frame(changed_table)
-    analysis_data[analysis_data == ""]       <- NA
-    analysis_data <- analysis_data[, !apply(analysis_data, 2, function(col) all(col == 0))]
+    analysis_data[analysis_data == ""] <- NA
+    analysis_data <- analysis_data[, !apply(analysis_data, 2, function(col) all(col == 0)), drop = FALSE]
 
-    # 2) Garante que todos os features do modelo existam nos dados
+    # 2) Extrai ground truth a partir do selectInput
+    dataset_col <- input$dataset_response_col
+    if (!is.null(dataset_col) && dataset_col %in% colnames(analysis_data)) {
+      if (length(model_obj$levels) > 0) {
+        analysis_data[[dataset_col]] <- as.factor(analysis_data[[dataset_col]])
+        ground_truth <- analysis_data[[dataset_col]]
+      } else {
+        ground_truth <- as.numeric(analysis_data[[dataset_col]])
+      }
+      analysis_data <- analysis_data[, setdiff(colnames(analysis_data), dataset_col), drop = FALSE]
+    } else {
+      ground_truth <- rep(NA, nrow(analysis_data))
+    }
+
+    preview <- model_analysis_missing_preview()
+    keep_rows <- preview$keep_rows
+    analysis_data <- analysis_data[keep_rows, , drop = FALSE]
+    ground_truth <- ground_truth[keep_rows]
+
+    # 3) Garante que todos os features do modelo existam nos dados
     model_features <- model_obj$finalModel$xNames
     for (feat in model_features) {
       if (!(feat %in% colnames(analysis_data))) {
@@ -2255,20 +2404,19 @@ observeEvent(input$model_file, {
       }
     }
 
-    # 3) Extrai ground truth a partir do selectInput
-    dataset_col <- input$dataset_response_col
-    if (!is.null(dataset_col) && dataset_col %in% colnames(analysis_data)) {
-      # classificação só se houver ao menos 1 nível
-      if (length(model_obj$levels) > 0) {
-        analysis_data[[dataset_col]] <- as.factor(analysis_data[[dataset_col]])
-        ground_truth <- analysis_data[[dataset_col]]
-      } else {
-        ground_truth <- as.numeric(analysis_data[[dataset_col]])
-      }
-      # remove a coluna alvo das features
-      analysis_data <- analysis_data[, setdiff(colnames(analysis_data), dataset_col), drop = FALSE]
-    } else {
-      ground_truth <- NA
+    if (nrow(analysis_data) == 0) {
+      output$model_analysis_accuracy <- renderPrint({
+        cat("No samples left after missingness filtering.\n")
+      })
+      output$model_analysis_correlation_plot <- renderPlot({
+        plot.new()
+        text(0.5, 0.5, "No samples left after missingness filtering.")
+      })
+      output$model_analysis_table <- DT::renderDT({
+        DT::datatable(data.frame())
+      })
+      model_analysis_results_data(data.frame())
+      return()
     }
 
     analysis_data <- apply_saved_preprocess(analysis_data, preprocess_meta)
@@ -2368,10 +2516,75 @@ observeEvent(input$model_file, {
       })
     }
 
+    output$model_analysis_correlation_plot <- renderPlot({
+      if ("Ground_Truth" %in% colnames(output_table) && "Predicted" %in% colnames(output_table)) {
+        gt <- suppressWarnings(as.numeric(as.character(output_table$Ground_Truth)))
+        pred <- suppressWarnings(as.numeric(as.character(output_table$Predicted)))
+        valid <- which(!is.na(gt) & !is.na(pred))
+        if (length(valid) > 0) {
+          gt_valid <- gt[valid]
+          pred_valid <- pred[valid]
+          lims <- range(c(gt_valid, pred_valid), na.rm = TRUE)
+          if (!all(is.finite(lims)) || lims[1] == lims[2]) {
+            lims <- lims + c(-0.5, 0.5)
+          }
+          old_par <- par(no.readonly = TRUE)
+          on.exit(par(old_par))
+          par(pty = "s")
+          plot(
+            gt_valid, pred_valid,
+            xlab = "Real value",
+            ylab = "Predicted value",
+            main = "Real vs Predicted",
+            pch = 16,
+            col = "#1f78b4",
+            xlim = lims,
+            ylim = lims,
+            asp = 1
+          )
+          abline(a = 0, b = 1, col = "gray40", lty = 2, lwd = 2)
+          n_pairs <- length(valid)
+          pearson_r <- if (n_pairs >= 2) stats::cor(gt_valid, pred_valid, method = "pearson") else NA_real_
+          r2 <- if (!is.na(pearson_r)) pearson_r^2 else NA_real_
+          mae <- mean(abs(pred_valid - gt_valid))
+          if (length(valid) >= 2) {
+            abline(stats::lm(pred_valid ~ gt_valid), col = "#e31a1c", lwd = 2)
+          }
+          legend(
+            "topleft",
+            legend = c("Identity line (y = x)", "Regression line"),
+            col = c("gray40", "#e31a1c"),
+            lty = c(2, 1),
+            lwd = c(2, 2),
+            bg = "white",
+            cex = 0.8
+          )
+          legend(
+            "bottomright",
+            legend = c(
+              paste0("n: ", n_pairs),
+              paste0("Pearson R: ", format(round(pearson_r, 6), nsmall = 6)),
+              paste0("R^2: ", format(round(r2, 6), nsmall = 6)),
+              paste0("MAE: ", format(round(mae, 6), nsmall = 6))
+            ),
+            bty = "n",
+            cex = 0.8
+          )
+        } else {
+          plot.new()
+          text(0.5, 0.5, "No valid numeric pairs for correlation plot.")
+        }
+      } else {
+        plot.new()
+        text(0.5, 0.5, "Correlation plot unavailable for this model/output.")
+      }
+    })
+
     # 5) Renderiza a tabela final
     output$model_analysis_table <- DT::renderDT({
       DT::datatable(output_table, options = list(paging = FALSE, scrollX = TRUE))
     })
+    model_analysis_results_data(output_table)
   })
 
 
