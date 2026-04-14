@@ -495,9 +495,11 @@ ui <- fluidPage(
         br(),
         verbatimTextOutput("model_analysis_accuracy"),
         br(),
-        plotOutput("model_analysis_correlation_plot", height = "320px"),
+        plotOutput("model_analysis_correlation_plot", height = "520px", width = "520px"),
         verbatimTextOutput("model_analysis_correlation_metrics"),
         br(),
+        downloadButton("downloadModelAnalysisTable", "Download analysis table (CSV)"),
+        br(), br(),
         DT::DTOutput("model_analysis_table")
       )
     )
@@ -1054,6 +1056,8 @@ server <- function(input, output, session) {
   tab_separator <- reactiveVal(",")
   file_click_count <- reactiveVal(0)
   last_file_click_count <- 0
+  original_dataset_filename <- reactiveVal("model_analysis_results")
+  model_analysis_results_data <- reactiveVal(data.frame())
 
   output$downloadData <- downloadHandler(
     filename = function() {
@@ -1124,10 +1128,31 @@ server <- function(input, output, session) {
     }
   )
 
+  output$downloadModelAnalysisTable <- downloadHandler(
+    filename = function() {
+      base_name <- tools::file_path_sans_ext(basename(original_dataset_filename()))
+      if (is.null(base_name) || !nzchar(base_name)) {
+        base_name <- "model_analysis_results"
+      }
+      paste0(base_name, ".csv")
+    },
+    content = function(file) {
+      table_to_download <- model_analysis_results_data()
+      req(nrow(table_to_download) > 0)
+      has_content <- vapply(table_to_download, function(col) {
+        normalized <- trimws(as.character(col))
+        any(!is.na(col) & normalized != "")
+      }, logical(1))
+      table_to_download <- table_to_download[, has_content, drop = FALSE]
+      utils::write.csv(table_to_download, file, row.names = FALSE)
+    }
+  )
+
   ####################### TAB 1) LOAD DATA
   observeEvent(input$file1, {
     file_click_count(file_click_count() + 1)
     filepath <- req(input$file1$datapath)
+    original_dataset_filename(input$file1$name)
     skipline <- input$startfromline - 1
     tryCatch({
       df_pre <<- read.table(filepath, header = TRUE, sep = tab_separator(), row.names = 1,
@@ -1583,6 +1608,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$load_sample, {
     dff <<- sample_data
+    original_dataset_filename("sample.csv")
     reset_missing_strategy_ui()
     head(dff)
     load_dataset_into_table(session)
@@ -2393,43 +2419,7 @@ observeEvent(input$model_file, {
       output$model_analysis_table <- DT::renderDT({
         DT::datatable(data.frame())
       })
-      return()
-    }
-
-    missing_definition <- input$model_analysis_missing_definition
-    if (is.null(missing_definition) || length(missing_definition) == 0) {
-      missing_definition <- character(0)
-    }
-    threshold_rows <- input$model_analysis_missing_threshold_rows
-    missing_mask <- build_missing_mask(analysis_data, missing_definition, zero_exceptions = character(0))
-    row_missing_pct <- if (ncol(missing_mask) > 0) rowMeans(missing_mask) * 100 else rep(0, nrow(analysis_data))
-    keep_rows <- which(row_missing_pct <= threshold_rows)
-    removed_rows <- nrow(analysis_data) - length(keep_rows)
-
-    analysis_data <- analysis_data[keep_rows, , drop = FALSE]
-    if (length(ground_truth) > 1) {
-      ground_truth <- ground_truth[keep_rows]
-    }
-
-    output$model_analysis_missing_summary <- renderPrint({
-      cat(
-        "Missing definition:",
-        if (length(missing_definition) == 0) "(none selected)" else paste(missing_definition, collapse = ", "),
-        "\n",
-        "Row threshold (%): ", threshold_rows, "\n",
-        "Removed samples: ", removed_rows, "\n",
-        "Samples after filter: ", nrow(analysis_data), "\n",
-        sep = ""
-      )
-    })
-
-    if (nrow(analysis_data) == 0) {
-      output$model_analysis_accuracy <- renderPrint({
-        cat("No samples left after missingness filtering.\n")
-      })
-      output$model_analysis_table <- DT::renderDT({
-        DT::datatable(data.frame())
-      })
+      model_analysis_results_data(data.frame())
       return()
     }
 
@@ -2538,13 +2528,23 @@ observeEvent(input$model_file, {
         if (length(valid) > 0) {
           gt_valid <- gt[valid]
           pred_valid <- pred[valid]
+          lims <- range(c(gt_valid, pred_valid), na.rm = TRUE)
+          if (!all(is.finite(lims)) || lims[1] == lims[2]) {
+            lims <- lims + c(-0.5, 0.5)
+          }
+          old_par <- par(no.readonly = TRUE)
+          on.exit(par(old_par))
+          par(pty = "s")
           plot(
             gt_valid, pred_valid,
             xlab = "Real value",
             ylab = "Predicted value",
             main = "Real vs Predicted",
             pch = 16,
-            col = "#1f78b4"
+            col = "#1f78b4",
+            xlim = lims,
+            ylim = lims,
+            asp = 1
           )
           abline(a = 0, b = 1, col = "gray40", lty = 2, lwd = 2)
           if (length(valid) >= 2) {
@@ -2591,6 +2591,7 @@ observeEvent(input$model_file, {
     output$model_analysis_table <- DT::renderDT({
       DT::datatable(output_table, options = list(paging = FALSE, scrollX = TRUE))
     })
+    model_analysis_results_data(output_table)
   })
 
 
