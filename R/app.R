@@ -467,12 +467,32 @@ ui <- fluidPage(
         selectInput("dataset_response_col", "Target column:",
                                                    choices = NULL,
                                                    selected = NULL),
+        checkboxGroupInput(
+          "model_analysis_missing_definition",
+          "Consider as missing:",
+          choices = c(
+            "Empty string" = "empty",
+            "NA" = "na",
+            "Zero (0, 0.0, 0.0000)" = "zero"
+          ),
+          selected = c("empty", "na", "zero")
+        ),
+        numericInput(
+          "model_analysis_missing_threshold_rows",
+          "Remove samples when missingness is above (%)",
+          value = 100,
+          min = 0,
+          max = 100,
+          step = 1
+        ),
 
         # Input for confidence threshold
         numericInput("confidence_threshold", "Confidence Threshold", value = 0.8, min = 0, max = 1, step = 0.01),
         actionButton("run_model_analysis", "Run Analysis"),
         br(), br(),
         # Extra metrics will be displayed here (before the table)
+        verbatimTextOutput("model_analysis_missing_summary"),
+        br(),
         verbatimTextOutput("model_analysis_accuracy"),
         br(),
         DT::DTOutput("model_analysis_table")
@@ -2269,6 +2289,43 @@ observeEvent(input$model_file, {
       analysis_data <- analysis_data[, setdiff(colnames(analysis_data), dataset_col), drop = FALSE]
     } else {
       ground_truth <- NA
+    }
+
+    missing_definition <- input$model_analysis_missing_definition
+    if (is.null(missing_definition) || length(missing_definition) == 0) {
+      missing_definition <- character(0)
+    }
+    threshold_rows <- input$model_analysis_missing_threshold_rows
+    missing_mask <- build_missing_mask(analysis_data, missing_definition, zero_exceptions = character(0))
+    row_missing_pct <- if (ncol(missing_mask) > 0) rowMeans(missing_mask) * 100 else rep(0, nrow(analysis_data))
+    keep_rows <- which(row_missing_pct <= threshold_rows)
+    removed_rows <- nrow(analysis_data) - length(keep_rows)
+
+    analysis_data <- analysis_data[keep_rows, , drop = FALSE]
+    if (length(ground_truth) > 1) {
+      ground_truth <- ground_truth[keep_rows]
+    }
+
+    output$model_analysis_missing_summary <- renderPrint({
+      cat(
+        "Missing definition:",
+        if (length(missing_definition) == 0) "(none selected)" else paste(missing_definition, collapse = ", "),
+        "\n",
+        "Row threshold (%): ", threshold_rows, "\n",
+        "Removed samples: ", removed_rows, "\n",
+        "Samples after filter: ", nrow(analysis_data), "\n",
+        sep = ""
+      )
+    })
+
+    if (nrow(analysis_data) == 0) {
+      output$model_analysis_accuracy <- renderPrint({
+        cat("No samples left after missingness filtering.\n")
+      })
+      output$model_analysis_table <- DT::renderDT({
+        DT::datatable(data.frame())
+      })
+      return()
     }
 
     analysis_data <- apply_saved_preprocess(analysis_data, preprocess_meta)
