@@ -1070,7 +1070,11 @@ server <- function(input, output, session) {
 
   output$downloadBestModel <- downloadHandler(
     filename = function() {
-      paste0("ugplot_best_model.rds")
+      base_name <- tools::file_path_sans_ext(basename(original_dataset_filename()))
+      if (is.null(base_name) || !nzchar(base_name)) {
+        base_name <- "ugplot_best_model"
+      }
+      paste0(base_name, ".rds")
     },
     content = function(file) {
       saveRDS(list(
